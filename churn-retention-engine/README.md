@@ -67,10 +67,11 @@ I led the development of a **Churn-to-Retention Engine** consisting of:
 
 ## 📈 Outcome & Impact
 
-- 📉 **20–30% churn reduction** in pilot segments
-- 🛍️ **35% higher retention campaign effectiveness**
-- 💰 Estimated **$XM annual savings** (telecom client)
-- 🤖 System scaled across 3 business units within 6 months
+- 📉 **10–15% churn reduction** in pilot segments
+- 🛍️ **15% higher retention campaign effectiveness** (Telecom)
+- 💰 Estimated **30% improved targeting** (Retail)
+- 🤖 System scaled across 3 business units within 6 months (Telecom)
+- 🛍️ Operational optimization done across 70+ stores across GCC (Retail)
 
 ---
 
