@@ -6,25 +6,16 @@ Welcome to my portfolio of applied AI and ML case studies. These projects are ba
 
 ## 👋 About Me
 
-I'm currently a **Measurement Lead at Snapchat**, with prior experience building AI/ML solutions across domains like **retail, telecom, transportation, insurance**, and **banking**.
+I build applied ML systems for marketing & retail: demand forecasting, promo analytics, segmentation, and AI-assisted decisioning. This repo-of-repos links to runnable projects with docs, sample data, and plots.
 
-This portfolio reflects my evolution toward **AI Product Management** — blending data-driven decision-making with business impact, ethical considerations, and user-centric design.
-
----
-
-## 📁 Featured Projects
-
-| Project | Description |
-|--------|-------------|
-| [`churn-retention-engine`](./churn-retention-engine) | Predict high-risk customers and auto-match them with personalized retention offers |
-| [`airport-recommendation-system`](./airport-recommendation-system) | Context-aware recommender for airport retail based on location, need, and sentiment |
-| [`segmentation-personalization`](./segmentation-personalization) | Behavioral clustering and targeting models to drive personalized campaigns |
-
-Each write-up includes:
-- The **business problem**
-- The **ML/AI strategy**
-- The **impact** delivered
-- The **product thinking** behind it
+| Project | What it does | Stack | Highlights |
+|---|---|---|---|
+| [waste-prediction](./waste_prediction) | Probabilistic daily demand + order policy to cut fresh-food waste | Python, SARIMAX, GBM | P10/P50/P90, newsvendor orders, festival/promos |
+| [promo-sensitivity](./promo-sensitivity) | Find price-discount sensitive customers | KMeans, DecisionTree, Rules | Cluster profiles, guardrails, label breakdown |
+| [customer-response](./customer_response) | Propensity to respond + top categories | RFE, Class-weighted LR | Calibrated probs, deciles, category ranking |
+| [price-volatility-ksa](./price-volatility) | Time-series w/ exogenous drivers for chemicals | SARIMAX, GBoost | MAE/MAPE, plots, CSV forecasts |
+| [customer-health-score](./customer_health_score) | Rule-based 0–100 health score for banking | Pandas, Rules | Explainability contributions, bands |
+| [basket-segmentation](./basket_segmentation) | Cuisine preference segmentation | RFM, XGBoost, Rules | Feature importances, predictions |
 
 ---
 
