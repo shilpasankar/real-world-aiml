@@ -1,6 +1,6 @@
 # 📊 Real-World AI/ML Portfolio
 
-Welcome to my portfolio of applied AI and ML case studies. These projects are based on real business challenges I’ve worked on — not academic datasets — and reflect how I use data science, machine learning, and product thinking to drive outcomes.
+Welcome to my portfolio of applied AI and ML case studies. These projects reflect how I use data science, machine learning, and product thinking to drive outcomes.
 
 ---
 
@@ -10,11 +10,11 @@ I build applied ML systems for marketing & retail: demand forecasting, promo ana
 
 | Project | What it does | Stack | Highlights |
 |---|---|---|---|
-| [waste-prediction](./waste_prediction) | Probabilistic daily demand + order policy to cut fresh-food waste | Python, SARIMAX, GBM | P10/P50/P90, newsvendor orders, festival/promos |
+| [waste-prediction](./waste_prediction) | Probabilistic daily demand + order policy to cut waste | Python, SARIMAX, GBM | P10/P50/P90, newsvendor orders, festival/promos |
 | [promo-sensitivity](./promo-sensitivity) | Find price-discount sensitive customers | KMeans, DecisionTree, Rules | Cluster profiles, guardrails, label breakdown |
 | [customer-response](./customer_response) | Propensity to respond + top categories | RFE, Class-weighted LR | Calibrated probs, deciles, category ranking |
 | [price-volatility-ksa](./price-volatility) | Time-series w/ exogenous drivers for chemicals | SARIMAX, GBoost | MAE/MAPE, plots, CSV forecasts |
-| [customer-health-score](./customer_health_score) | Rule-based 0–100 health score for banking | Pandas, Rules | Explainability contributions, bands |
+| [customer-health-score](./customer_health_score) | Rule-based 0–100 health score | Pandas, Rules | Explainability contributions, bands |
 | [basket-segmentation](./basket_segmentation) | Cuisine preference segmentation | RFM, XGBoost, Rules | Feature importances, predictions |
 
 ---
