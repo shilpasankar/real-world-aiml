@@ -1,8 +1,9 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib import ticker as mtick
+
+import plotly.express as px
+import plotly.graph_objects as go
 
 from sklearn.metrics import (
     confusion_matrix,
@@ -20,13 +21,15 @@ from basket_segmentation.cuisine_segmentation import (
 # -----------------------
 # Page setup
 # -----------------------
-st.set_page_config(page_title="Basket Segmentation", layout="wide")
+st.set_page_config(page_title="🍽️ Basket Segmentation", layout="wide")
 st.title("🍽️ Basket Segmentation (Demo)")
 
 st.markdown("""
-Upload your **TRAIN transactions CSV**, optional **VALIDATION transactions CSV**, and **SKU map CSV**.
-This version includes **validation metrics** and **compact visuals** (confusion matrix with normalization, donut chart,
-violin plots for confidence, and feature-importance charts).
+**What this page does**  
+- Upload **TRAIN** transactions (CSV), optional **VALIDATION** transactions, and **SKU map**.  
+- Trains your RFM + XGBoost model and applies the rule override layer.  
+- Shows **Validation Accuracy / Macro F1**, **Confusion Matrix**, **Segment Mix**, **Confidence violins**, and **Feature Importance**.  
+- Each chart has a 🛈 **How to read this chart** toggle for quick interpretation.  
 """)
 
 # -----------------------
@@ -41,7 +44,8 @@ with st.sidebar:
     dominance_threshold = st.slider("Dominance Threshold", 0.0, 1.0, 0.6, 0.01)
     override_conf = st.slider("Override Confidence", 0.0, 1.0, 0.55, 0.01)
     normalize_cm = st.checkbox("Normalize Confusion Matrix", value=True)
-    topk_features = st.slider("Top-K Features to Plot", 5, 30, 12, 1)
+    topk_features = st.slider("Top-K Features to Plot", 5, 30, 15, 1)
+    st.caption("Plotly visuals use fixed heights and a clean template for screenshots.")
 
 # -----------------------
 # Helpers
@@ -53,17 +57,47 @@ def _read_txn_csv(file):
         parse_dates=["date"],
         keep_default_na=True,
     )
-    # Robust numeric
     df["amount"] = pd.to_numeric(df.get("amount", 0.0), errors="coerce").fillna(0.0).astype("float32")
-    # Optional region default
     if "region" not in df.columns:
         df["region"] = "NA"
     return df
 
-# Small wrapper to keep all plots tight & compact
-def _show(fig):
-    plt.tight_layout(pad=0.5)
-    st.pyplot(fig, use_container_width=False, clear_figure=True)
+def _plot_cm(cm, class_order, normalized: bool):
+    # Heatmap with annotations
+    z = cm.astype(float)
+    z_text = np.empty_like(z).astype(object)
+    for i in range(z.shape[0]):
+        for j in range(z.shape[1]):
+            z_text[i, j] = f"{z[i, j]:.0%}" if normalized else f"{int(z[i, j])}"
+
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=z,
+            x=class_order,
+            y=class_order,
+            colorscale="Blues" if normalized else "Oranges",
+            colorbar=dict(title="%" if normalized else "Count"),
+            zmin=0,
+            zmax=1 if normalized else None,
+            hovertemplate="True %{y}<br>Pred %{x}<br><b>%{z}</b><extra></extra>"
+        )
+    )
+    # Add text annotations
+    for i, ylab in enumerate(class_order):
+        for j, xlab in enumerate(class_order):
+            fig.add_annotation(
+                x=xlab, y=ylab, text=z_text[i, j],
+                showarrow=False, font=dict(size=12, color="black")
+            )
+    fig.update_layout(
+        template="plotly_white",
+        title="Confusion Matrix (A/B/C/D)",
+        xaxis=dict(title="Predicted"),
+        yaxis=dict(title="True", autorange="reversed"),
+        height=420,
+        margin=dict(t=60, b=40, l=60, r=30),
+    )
+    return fig
 
 # -----------------------
 # Main
@@ -77,16 +111,13 @@ if txns_file and sku_file:
         sku_file,
         dtype={"sku": "string", "cuisine_tag": "string"},
     )
-
-    # Optional validation
     val_df = _read_txn_csv(val_file) if val_file is not None else None
 
     try:
         # --------- Prepare datasets ---------
         if val_df is not None:
-            st.info("Using uploaded validation dataset (no internal split).")
+            st.info("Using uploaded VALIDATION dataset (no internal split).")
 
-            # Prepare separately for train & valid, then tag splits
             labeled_train_only, _, feats_all_train, feature_cols = prepare_dataset(
                 txns=txns_df,
                 sku_map=sku_df,
@@ -106,10 +137,9 @@ if txns_file and sku_file:
             labeled_valid_only["split"] = "valid"
 
             labeled_train = pd.concat([labeled_train_only, labeled_valid_only], ignore_index=True)
-            # For whole-population predictions/visuals, use train+val population together:
             feats_all = pd.concat([feats_all_train, feats_all_valid], ignore_index=True)
 
-            # If validation introduced new numeric features (e.g., new cuisines), ensure columns exist in feats_all
+            # If validation introduced new features, pad them
             for col in feature_cols:
                 if col not in feats_all.columns:
                     feats_all[col] = 0.0
@@ -122,33 +152,24 @@ if txns_file and sku_file:
                 dominance_threshold=dominance_threshold,
             )
 
-        # Optional debug
-        with st.expander("Debug: Feature dtypes"):
-            try:
-                st.write(feats_all[feature_cols].dtypes)
-            except Exception:
-                st.write("Feature dtypes unavailable (no features).")
-
         # --------- Train ---------
         if len(labeled_train) == 0:
-            raise ValueError("No labeled rows available for training (segments A-D). Check your inputs.")
+            raise ValueError("No labeled rows for training (segments A-D). Check your inputs.")
 
         model, metrics = train_xgb(labeled_train, feature_cols)
 
-        # --------- Inference on ALL customers (for outputs & visuals) ---------
+        # --------- Inference (ALL customers) ---------
         X_all = feats_all[feature_cols].to_numpy(dtype=np.float32, copy=False)
         proba_all = model.predict_proba(X_all)
         idx_all = np.argmax(proba_all, axis=1)
         conf_all = proba_all.max(axis=1)
 
-        present_labels = getattr(model, "_present_labels_", None)
-        if present_labels is None:
-            present_labels = getattr(model, "classes_", np.array(list("ABCD")))
+        present_labels = getattr(model, "_present_labels_", None) or getattr(model, "classes_", np.array(list("ABCD")))
         label_all = np.asarray(present_labels)[idx_all]
 
         preds_df = pd.DataFrame({
             "customer_id": feats_all["customer_id"].astype(str),
-            "pred_segment_model": label_all,       # human-readable A/B/C/D
+            "pred_segment_model": label_all,
             "pred_proba_max": conf_all
         })
 
@@ -182,7 +203,7 @@ if txns_file and sku_file:
             val_acc = accuracy_score(y_valid, y_pred)
             val_f1 = f1_score(y_valid, y_pred, average="macro")
 
-            # Confusion matrix in fixed A/B/C/D order
+            # Confusion matrix
             cm_counts = confusion_matrix(y_valid, y_pred, labels=class_order)
             if normalize_cm:
                 with np.errstate(divide="ignore", invalid="ignore"):
@@ -203,75 +224,55 @@ if txns_file and sku_file:
             trained_labels = ", ".join(map(str, getattr(model, "_present_labels_", getattr(model, "_full_labels_", []))))
             st.metric("Classes Trained", trained_labels if trained_labels else "—")
 
-        # --------- Confusion Matrix (compact) ---------
+        # --------- Confusion Matrix (Plotly) ---------
         if cm is not None:
             st.subheader("Confusion Matrix")
-            fig, ax = plt.subplots(figsize=(5, 4))
-            im = ax.imshow(cm, interpolation="nearest", cmap="Blues" if normalize_cm else "Oranges")
-            ax.set_title("Confusion Matrix (A/B/C/D)", fontsize=12)
-            ax.set_xlabel("Predicted", fontsize=10)
-            ax.set_ylabel("True", fontsize=10)
-            ax.set_xticks(range(len(class_order)), class_order)
-            ax.set_yticks(range(len(class_order)), class_order)
+            show_help_cm = st.checkbox("🛈 How to read this chart — Confusion Matrix", value=True)
+            fig_cm = _plot_cm(np.array(cm, dtype=float), class_order, normalized=normalize_cm)
+            st.plotly_chart(fig_cm, use_container_width=False)
+            if show_help_cm:
+                st.caption(
+                    "**Read it like this:** Rows are *true* segments, columns are *predicted*. "
+                    "Darker diagonal = better. If normalized, each row sums to 100%."
+                )
+            # Text report
+            with st.expander("Classification Report (Valid)"):
+                st.text(classification_report(y_valid, y_pred, labels=class_order, zero_division=0))
 
-            # Colorbar with % when normalized
-            cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-            if normalize_cm:
-                cbar.ax.yaxis.set_major_formatter(mtick.PercentFormatter(1.0))
-
-            # annotate cells
-            for i in range(len(class_order)):
-                for j in range(len(class_order)):
-                    val = cm[i, j]
-                    text = f"{val:.0%}" if normalize_cm else f"{int(val)}"
-                    ax.text(j, i, text, ha="center", va="center", fontsize=9, weight="bold")
-
-            _show(fig)
-
-            # Classification report (compact text)
-            st.caption("Classification Report (Valid)")
-            st.text(classification_report(y_valid, y_pred, labels=class_order, zero_division=0))
-
-        # --------- Segment Distribution (compact donut) ---------
+        # --------- Segment Distribution (Pie/Donut) ---------
         st.subheader("Distribution of Final Segments")
+        show_help_mix = st.checkbox("🛈 How to read this chart — Segment Mix", value=True)
         seg_counts = preds_df["final_segment"].value_counts().sort_index()
-        fig2, ax2 = plt.subplots(figsize=(4.2, 4.2))
-        wedges, _ = ax2.pie(seg_counts.values, startangle=90)
-        # Donut hole
-        centre_circle = plt.Circle((0, 0), 0.65, fc="white")
-        ax2.add_artist(centre_circle)
-        ax2.axis("equal")
-        ax2.set_title("Final Segment Mix", fontsize=12)
-        # compact legend
-        ax2.legend(
-            wedges,
-            [f"{k}: {v}" for k, v in zip(seg_counts.index, seg_counts.values)],
-            loc="center left",
-            bbox_to_anchor=(1.0, 0.5),
-            fontsize=9,
-            frameon=False
+        mix_df = seg_counts.rename_axis("segment").reset_index(name="customers")
+        fig_pie = px.pie(
+            mix_df, names="segment", values="customers",
+            hole=0.6, title="Final Segment Mix",
+            color="segment",
         )
-        _show(fig2)
+        fig_pie.update_layout(template="plotly_white", height=360, margin=dict(t=60, b=40, l=40, r=40))
+        st.plotly_chart(fig_pie, use_container_width=False)
+        if show_help_mix:
+            st.caption("**Read it like this:** The donut shows how customers are distributed across final segments after the rule overrides.")
 
-        # --------- Confidence by Final Segment (compact violins) ---------
+        # --------- Confidence by Final Segment (Violin) ---------
         st.subheader("Prediction Confidence by Final Segment")
-        order = [c for c in "ABCD" if c in seg_counts.index.tolist()]
-        grouped = [preds_df.loc[preds_df["final_segment"] == seg, "pred_proba_max"].values for seg in order]
-
-        if any(len(g) > 0 for g in grouped):
-            fig3, ax3 = plt.subplots(figsize=(5.5, 3.2))
-            parts = ax3.violinplot(grouped, showmeans=True, showextrema=False)
-            ax3.set_xticks(range(1, len(order) + 1))
-            ax3.set_xticklabels(order)
-            ax3.set_ylim(0, 1)
-            ax3.set_ylabel("Max Predicted Probability")
-            ax3.set_title("Confidence by Final Segment", fontsize=12)
-            _show(fig3)
+        show_help_violin = st.checkbox("🛈 How to read this chart — Confidence", value=True)
+        vio_df = preds_df[["final_segment", "pred_proba_max"]].rename(columns={"final_segment": "segment", "pred_proba_max": "confidence"})
+        if len(vio_df) and vio_df["segment"].nunique() > 0:
+            fig_violin = px.violin(
+                vio_df, x="segment", y="confidence", points=False, box=True,
+                title="Confidence (max predicted probability) by Segment"
+            )
+            fig_violin.update_layout(template="plotly_white", yaxis=dict(range=[0,1]), height=380, margin=dict(t=60, b=40, l=60, r=30))
+            st.plotly_chart(fig_violin, use_container_width=False)
+            if show_help_violin:
+                st.caption("**Read it like this:** Taller/shifted violins indicate higher or more variable confidence. Boxes show medians and quartiles.")
         else:
             st.info("Not enough data per segment to draw violins.")
 
-        # --------- Feature Importance (compact bar + polar) ---------
+        # --------- Feature Importance (Bar) ---------
         st.subheader("Feature Importance")
+        show_help_imp = st.checkbox("🛈 How to read this chart — Feature Importance", value=True)
 
         imp_df = pd.DataFrame(columns=["feature", "importance"])
 
@@ -288,8 +289,7 @@ if txns_file and sku_file:
 
         if imp_df.empty and hasattr(model, "feature_importances_"):
             try:
-                arr = np.asarray(model.feature_importances_, dtype=float)
-                arr = arr[: len(feature_cols)]
+                arr = np.asarray(model.feature_importances_, dtype=float)[: len(feature_cols)]
                 imp_df = pd.DataFrame({"feature": feature_cols, "importance": arr})
             except Exception:
                 pass
@@ -297,42 +297,33 @@ if txns_file and sku_file:
         if imp_df.empty:
             st.info("Feature importances unavailable (e.g., single-class fallback or tiny dataset).")
         else:
-            imp_df = imp_df.groupby("feature", as_index=False)["importance"].sum()
-            imp_df = imp_df.sort_values("importance", ascending=False)
-            imp_df["importance_norm"] = imp_df["importance"] / imp_df["importance"].sum()
-
-            # Table (top-k, compact)
-            st.dataframe(
-                imp_df[["feature", "importance", "importance_norm"]].head(topk_features),
-                use_container_width=True,
+            imp_df = (
+                imp_df.groupby("feature", as_index=False)["importance"].sum()
+                      .sort_values("importance", ascending=False)
             )
+            imp_df["importance_norm"] = imp_df["importance"] / imp_df["importance"].sum()
+            top_imp = imp_df.head(topk_features)
 
-            # Ranked horizontal bar (top-k, compact)
-            top_imp = imp_df.head(topk_features).iloc[::-1]  # reverse for barh top-down
-            fig_imp, ax_imp = plt.subplots(figsize=(6.2, 4.0))
-            ax_imp.barh(top_imp["feature"], top_imp["importance_norm"])
-            ax_imp.set_xlabel("Relative Importance (gain)")
-            ax_imp.set_title("Top Feature Importances", fontsize=12)
-            ax_imp.xaxis.set_major_formatter(mtick.PercentFormatter(1.0))
-            _show(fig_imp)
+            fig_imp = px.bar(
+                top_imp.sort_values("importance_norm", ascending=True),
+                x="importance_norm", y="feature", orientation="h",
+                title="Top Feature Importances (normalized gain)",
+                labels={"importance_norm": "Relative Importance", "feature": "Feature"},
+                text="importance_norm",
+            )
+            fig_imp.update_traces(texttemplate="%{text:.0%}", textposition="outside", cliponaxis=False)
+            fig_imp.update_layout(template="plotly_white", height=420, margin=dict(t=60, b=40, l=80, r=40), xaxis_tickformat=".0%")
+            st.plotly_chart(fig_imp, use_container_width=False)
 
-            # Polar "rose" chart (top-k, compact)
-            fig_polar, ax_pol = plt.subplots(figsize=(5.0, 5.0), subplot_kw={'polar': True})
-            theta = np.linspace(0.0, 2 * np.pi, len(top_imp), endpoint=False)
-            radii = top_imp["importance_norm"].values
-            width = (2 * np.pi) / max(len(top_imp), 1)
-            ax_pol.bar(theta, radii, width=width, bottom=0.0, align="edge")
-            ax_pol.set_yticklabels([])
-            ax_pol.set_xticks(theta + width / 2)
-            ax_pol.set_xticklabels(top_imp["feature"])
-            ax_pol.set_title("Top Features (Polar)", va="bottom", fontsize=12)
-            _show(fig_polar)
+            if show_help_imp:
+                st.caption("**Read it like this:** Higher bars = stronger influence on model decisions. "
+                           "Use this to explain which behaviors/cuisines drive segment predictions.")
 
         # --------- Predictions & Summary ---------
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("Sample Predictions")
-            st.dataframe(preds_df.head(20), use_container_width=True)
+            st.dataframe(preds_df.head(25), use_container_width=True)
         with col2:
             st.subheader("Segment Summary (Final)")
             summary = preds_df.groupby("final_segment").size().rename("customers").reset_index()
