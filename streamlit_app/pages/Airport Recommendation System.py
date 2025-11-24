@@ -1,21 +1,29 @@
 # streamlit_app/pages/Airport Recommendation System.py
-# Transparent Airport Recommender with uploads, validation, fixed-size annotated visuals
+# Modern Plotly-based visuals + "How to read this chart" toggles
+# Uploads: TRAIN (required), VALIDATION (optional), METADATA (optional)
+# Metrics: HR@K, MAP@K, NDCG@K
+# Recommender: popularity + item-item similarity (cosine-like), blend via alpha_pop
 
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 from collections import defaultdict
 
-st.set_page_config(page_title="🧭 Airport Recommendation System", layout="wide")
-st.title("🧭 Airport Recommendation System (Demo)")
+import plotly.express as px
+import plotly.graph_objects as go
+
+# -----------------------
+# Page setup
+# -----------------------
+st.set_page_config(page_title="🧭 Airport Recommendation System (Plotly)", layout="wide")
+st.title("🧭 Airport Recommendation System (Demo) — Plotly Edition")
 
 st.markdown("""
 **What this page does**  
-- Upload **TRAIN** interactions (user_id, airport_id[, value][, ts]) and optional **VALIDATION** interactions.  
-- Builds a simple, transparent **hybrid recommender**: popularity + item–item similarity.  
-- Reports **HR@K / MAP@K / NDCG@K** and shows annotated visuals explaining *why* results look the way they do.  
-- Optional metadata (airport_id → name) for nicer labels.
+- Upload **TRAIN** interactions and optional **VALIDATION** + **METADATA**.  
+- Builds a transparent, hybrid recommender (popularity + similarity).  
+- Reports **HR@K / MAP@K / NDCG@K** and shows modern, annotated Plotly visuals.  
+- Each chart has a 🛈 **How to read this chart** toggle for quick interpretation.
 """)
 
 # -----------------------
@@ -28,23 +36,18 @@ with st.sidebar:
                           help="0 = pure similarity; 1 = pure popularity")
     min_user_interactions = st.slider("Min interactions per user (train)", 1, 10, 1, 1)
     use_validation = st.checkbox("Use uploaded VALIDATION (else holdout from TRAIN)", value=True)
-    st.caption("Fixed figsize + tight layout for clean screenshots.")
+    st.caption("Plotly visuals use fixed heights and a clean template for screenshots.")
 
 # -----------------------
 # Uploaders
 # -----------------------
 train_file = st.file_uploader("Upload TRAIN interactions CSV", type=["csv"])
-val_file = st.file_uploader("Optional: Upload VALIDATION interactions CSV", type=["csv"])
-meta_file = st.file_uploader("Optional: Upload Airports metadata CSV", type=["csv"])
+val_file   = st.file_uploader("Optional: Upload VALIDATION interactions CSV", type=["csv"])
+meta_file  = st.file_uploader("Optional: Upload Airports metadata CSV", type=["csv"])
 
 # -----------------------
 # Helpers
 # -----------------------
-def _compact_show(fig, width=6.8, height=3.8):
-    fig.set_size_inches(width, height)
-    plt.tight_layout(pad=0.5)
-    st.pyplot(fig, use_container_width=False, clear_figure=True)
-
 def _read_interactions(upload) -> pd.DataFrame:
     df = pd.read_csv(upload)
     if "user_id" not in df.columns or "airport_id" not in df.columns:
@@ -111,7 +114,7 @@ def _item_cosine_scores(by_user, by_item):
             inter = len(Ua & Ub)
             if inter == 0:
                 continue
-            sim = inter / np.sqrt(len(Ua) * len(Ub))
+            sim = inter / np.sqrt(len(Ua) * len(Ub))  # cosine-like
             scores[a][b] = sim
             scores[b][a] = sim
     return scores
@@ -125,7 +128,6 @@ def _recommend_for_user(u, by_user, by_item, pop, sim_scores, alpha_pop=0.3, exc
         return []
     out = []
     for i in candidate_items:
-        # similarity term: max similarity to items the user has seen
         s = max((sim_scores.get(i, {}).get(j, 0.0) for j in seen), default=0.0) if seen else 0.0
         p = pop.get(i, 0.0)
         score = alpha_pop * p + (1.0 - alpha_pop) * s
@@ -157,17 +159,24 @@ if train_file is None:
     st.info("Upload TRAIN interactions to begin.")
     st.stop()
 
+# Read TRAIN
 try:
     train_df = _read_interactions(train_file)
-    st.success(f"TRAIN loaded: {len(train_df):,} rows, {train_df['user_id'].nunique():,} users, {train_df['airport_id'].nunique():,} airports")
+    st.success(f"TRAIN loaded: {len(train_df):,} rows • "
+               f"{train_df['user_id'].nunique():,} users • "
+               f"{train_df['airport_id'].nunique():,} airports")
 except Exception as e:
     st.error(f"Failed to read TRAIN: {e}")
     st.stop()
 
+# Read METADATA (optional)
 meta_df = None
+name_map = {}
 if meta_file is not None:
     try:
         meta_df = _read_meta(meta_file)
+        if "name" in meta_df.columns:
+            name_map = dict(zip(meta_df["airport_id"].astype(str), meta_df["name"].astype(str)))
         st.success(f"Metadata loaded: {len(meta_df):,} rows")
     except Exception as e:
         st.warning(f"Metadata skipped: {e}")
@@ -177,10 +186,11 @@ user_counts = train_df["user_id"].value_counts()
 keep_users = set(user_counts[user_counts >= min_user_interactions].index)
 train_df = train_df[train_df["user_id"].isin(keep_users)].reset_index(drop=True)
 
-# Validation choice
+# Build VALIDATION
 if use_validation and val_file is not None:
     try:
         val_df = _read_interactions(val_file)
+        # keep only users present in train (avoid cold start in eval)
         val_df = val_df[val_df["user_id"].isin(train_df["user_id"].unique())].reset_index(drop=True)
         st.info("Using uploaded VALIDATION interactions.")
     except Exception as e:
@@ -215,13 +225,14 @@ mapk = float(np.mean(maps)) if maps else 0.0
 ndcg = float(np.mean(ndcgs)) if ndcgs else 0.0
 
 # ---------- Metrics Row ----------
-c1, c2, c3 = st.columns(3)
-c1.metric(f"HR@{topk}", f"{hr*100:,.1f}%")
-c2.metric(f"MAP@{topk}", f"{mapk*100:,.1f}%")
-c3.metric(f"NDCG@{topk}", f"{ndcg*100:,.1f}%")
+st.markdown("### 📊 Recommendation Metrics")
+m1, m2, m3 = st.columns(3)
+m1.metric(f"HR@{topk}", f"{hr*100:,.1f}%")
+m2.metric(f"MAP@{topk}", f"{mapk*100:,.1f}%")
+m3.metric(f"NDCG@{topk}", f"{ndcg*100:,.1f}%")
 
 # ---------- Split Overview ----------
-st.subheader("Train / Validation Overview")
+st.markdown("### 🗂️ Train / Validation Overview")
 rows = [
     ("Train", train_df["user_id"].nunique(), train_df["airport_id"].nunique(), len(train_df)),
     ("Validation", val_df["user_id"].nunique(), val_df["airport_id"].nunique(), len(val_df)),
@@ -229,32 +240,46 @@ rows = [
 split_df = pd.DataFrame(rows, columns=["Split", "Users", "Airports", "Rows"])
 st.dataframe(split_df, use_container_width=True, hide_index=True)
 
-# ---------- Visuals ----------
-# 1) Airport popularity (ANNOTATED)
-st.subheader("Airport Popularity (Train)")
-pop_series = pd.Series(pop, name="count").sort_values(ascending=False)
+# ======================
+# Plot 1: Airport Popularity (Plotly)
+# ======================
+st.markdown("### 🛫 Airport Popularity (Train)")
+show_help_pop = st.checkbox("🛈 How to read this chart — Popularity", value=True)
+
+pop_series = pd.Series(pop, name="unique_users").sort_values(ascending=False)
 topN = min(20, len(pop_series))
 labels = list(pop_series.index[:topN])
-if meta_df is not None and "airport_id" in meta_df.columns and "name" in meta_df.columns:
-    name_map = dict(zip(meta_df["airport_id"].astype(str), meta_df["name"].astype(str)))
-    labels = [name_map.get(i, i) for i in labels]
+labels_pretty = [name_map.get(i, i) for i in labels]
 
-fig1, ax1 = plt.subplots(figsize=(7.0, 3.8))
-ax1.bar(range(topN), pop_series.values[:topN])
-ax1.set_xticks(range(topN))
-ax1.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
-ax1.set_ylabel("Users (count)")
-ax1.set_title("Top Airports by Unique Users (Train)", fontsize=12)
-# Annotation
-ax1.annotate(
-    "Popularity baseline:\n• Tall bars = safe default recs\n• But can reduce personalization",
-    xy=(0.01, 0.98), xycoords="axes fraction", va="top", ha="left",
-    fontsize=9, bbox=dict(boxstyle="round,pad=0.35", fc="white", ec="0.8", alpha=0.9)
+fig_pop = px.bar(
+    x=labels_pretty,
+    y=pop_series.values[:topN],
+    text=pop_series.values[:topN],
+    color=pop_series.values[:topN],
+    color_continuous_scale="Blues",
+    title="Top Airports by Unique Users (Train)",
+    labels={"x": "Airport", "y": "Unique users"},
 )
-_compact_show(fig1)
+fig_pop.update_traces(textposition="outside", cliponaxis=False)
+fig_pop.update_layout(
+    template="plotly_white",
+    height=380,
+    margin=dict(t=60, b=40, l=60, r=30),
+    coloraxis_showscale=False,
+    xaxis=dict(tickangle=-35),
+)
+st.plotly_chart(fig_pop, use_container_width=False)
 
-# 2) Blend sensitivity curve (ANNOTATED)
-st.subheader("Sensitivity: HR@K vs Popularity Blend")
+if show_help_pop:
+    st.caption("**Read it like this:** Taller bars = safer default recommendations (popular airports). "
+               "Great baseline, but over-reliance can reduce personalization.")
+
+# ======================
+# Plot 2: Blend Sensitivity — HR@K vs alpha_pop (Plotly)
+# ======================
+st.markdown("### 🎚️ Blend Sensitivity (HR@K vs Popularity Blend)")
+show_help_sens = st.checkbox("🛈 How to read this chart — Sensitivity", value=True)
+
 alphas = np.linspace(0.0, 1.0, 11)
 hrs = []
 for a in alphas:
@@ -266,22 +291,30 @@ for a in alphas:
         h.append(_hr_at_k(gt, recs))
     hrs.append(np.mean(h) if h else 0.0)
 
-fig2, ax2 = plt.subplots(figsize=(6.8, 3.8))
-ax2.plot(alphas, hrs, marker="o")
-ax2.set_xlabel("alpha_pop (0 = similarity, 1 = popularity)")
-ax2.set_ylabel(f"HR@{topk}")
-ax2.set_title("Blend Sensitivity", fontsize=12)
-ax2.set_ylim(0, 1)
-# Annotation
-ax2.annotate(
-    "Trade-off:\n• Left side → more personalized (similarity)\n• Right side → safer, popular picks",
-    xy=(0.02, 0.95), xycoords="axes fraction", va="top", ha="left",
-    fontsize=9, bbox=dict(boxstyle="round,pad=0.35", fc="white", ec="0.8", alpha=0.9)
+fig_sens = px.line(
+    x=alphas, y=hrs, markers=True,
+    labels={"x": "alpha_pop (0 = similarity, 1 = popularity)", "y": f"HR@{topk}"},
+    title="Trade-off: Personalization vs Popularity",
 )
-_compact_show(fig2)
+fig_sens.update_layout(
+    template="plotly_white",
+    height=360,
+    margin=dict(t=60, b=40, l=60, r=30),
+    yaxis=dict(range=[0, 1], tickformat=".0%"),
+)
+fig_sens.update_traces(hovertemplate="alpha_pop=%{x:.2f}<br>HR@K=%{y:.2%}")
+st.plotly_chart(fig_sens, use_container_width=False)
 
-# 3) Recommendation coverage (ANNOTATED)
-st.subheader("Recommendation Coverage")
+if show_help_sens:
+    st.caption("**Read it like this:** Left side favors *similarity* (more personalized); "
+               "right favors *popularity* (safer, more common picks). Tune alpha_pop to your product goals.")
+
+# ======================
+# Plot 3: Catalog Coverage — Unique airports recommended (Plotly)
+# ======================
+st.markdown("### 🌍 Recommendation Coverage")
+show_help_cov = st.checkbox("🛈 How to read this chart — Coverage", value=True)
+
 all_recs = []
 for u in users_eval:
     recs = _recommend_for_user(u, by_user_train, by_item_train, pop, sim_scores,
@@ -289,24 +322,29 @@ for u in users_eval:
     all_recs.extend(recs)
 unique_recs = len(set(all_recs))
 
-fig3, ax3 = plt.subplots(figsize=(6.8, 3.6))
-ax3.bar(["Unique Airports Recommended"], [unique_recs])
-ax3.set_ylim(0, max(1, unique_recs))
-ax3.set_title("Catalog Coverage of Top-K Recommendations", fontsize=12)
-# Annotation
-ax3.annotate(
-    "Coverage measures variety:\n• Higher = we surface more of the catalog\n• Too low = same few airports for everyone",
-    xy=(0.02, 0.9), xycoords="axes fraction", va="top", ha="left",
-    fontsize=9, bbox=dict(boxstyle="round,pad=0.35", fc="white", ec="0.8", alpha=0.9)
+fig_cov = go.Figure(
+    data=[go.Bar(x=["Unique Airports Recommended"], y=[unique_recs], text=[unique_recs], textposition="outside")]
 )
-_compact_show(fig3)
+fig_cov.update_layout(
+    title="Catalog Coverage of Top-K Recommendations",
+    template="plotly_white",
+    height=300,
+    margin=dict(t=60, b=40, l=60, r=60),
+    yaxis=dict(title="Count", rangemode="tozero"),
+)
+st.plotly_chart(fig_cov, use_container_width=False)
 
-# ---------- Debug / Preview ----------
+if show_help_cov:
+    st.caption("**Read it like this:** Higher coverage = more variety in the catalog. "
+               "If it’s very low, the model may be recommending the same few airports to everyone.")
+
+# ---------- Preview: Sample Recommendations ----------
 with st.expander("Preview: Sample Recommendations"):
     example_users = users_eval[:5]
     rows = []
     for u in example_users:
         recs = _recommend_for_user(u, by_user_train, by_item_train, pop, sim_scores,
-                                   alpha_pop=alpha_pop, exclude_seen=True, topk=topk)
-        rows.append({"user_id": u, "recommendations": ", ".join(recs)})
+                                   alpha_pop=alpha_pop, exclude_seen=True, topk=min(topk, 10))
+        pretty = [name_map.get(i, i) for i in recs]
+        rows.append({"user_id": u, "recommendations": ", ".join(pretty)})
     st.dataframe(pd.DataFrame(rows), use_container_width=True)
