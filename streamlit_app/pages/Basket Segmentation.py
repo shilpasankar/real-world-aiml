@@ -25,7 +25,7 @@ st.title("🍽️ Basket Segmentation (Demo)")
 
 st.markdown("""
 Upload your **TRAIN transactions CSV**, optional **VALIDATION transactions CSV**, and **SKU map CSV**.
-This version includes **validation metrics** and **rich visuals** (confusion matrix with normalization, donut chart,
+This version includes **validation metrics** and **compact visuals** (confusion matrix with normalization, donut chart,
 violin plots for confidence, and feature-importance charts).
 """)
 
@@ -41,7 +41,7 @@ with st.sidebar:
     dominance_threshold = st.slider("Dominance Threshold", 0.0, 1.0, 0.6, 0.01)
     override_conf = st.slider("Override Confidence", 0.0, 1.0, 0.55, 0.01)
     normalize_cm = st.checkbox("Normalize Confusion Matrix", value=True)
-    topk_features = st.slider("Top-K Features to Plot", 5, 30, 15, 1)
+    topk_features = st.slider("Top-K Features to Plot", 5, 30, 12, 1)
 
 # -----------------------
 # Helpers
@@ -59,6 +59,11 @@ def _read_txn_csv(file):
     if "region" not in df.columns:
         df["region"] = "NA"
     return df
+
+# Small wrapper to keep all plots tight & compact
+def _show(fig):
+    plt.tight_layout(pad=0.5)
+    st.pyplot(fig, use_container_width=False, clear_figure=True)
 
 # -----------------------
 # Main
@@ -101,7 +106,7 @@ if txns_file and sku_file:
             labeled_valid_only["split"] = "valid"
 
             labeled_train = pd.concat([labeled_train_only, labeled_valid_only], ignore_index=True)
-            # For whole-population predictions/visuals, you may want train+val population together:
+            # For whole-population predictions/visuals, use train+val population together:
             feats_all = pd.concat([feats_all_train, feats_all_valid], ignore_index=True)
 
             # If validation introduced new numeric features (e.g., new cuisines), ensure columns exist in feats_all
@@ -198,75 +203,74 @@ if txns_file and sku_file:
             trained_labels = ", ".join(map(str, getattr(model, "_present_labels_", getattr(model, "_full_labels_", []))))
             st.metric("Classes Trained", trained_labels if trained_labels else "—")
 
-        # --------- Confusion Matrix (rich) ---------
+        # --------- Confusion Matrix (compact) ---------
         if cm is not None:
             st.subheader("Confusion Matrix")
-            fig = plt.figure()
-            ax = plt.gca()
-            im = ax.imshow(cm, interpolation="nearest")
-            plt.title("Confusion Matrix (A/B/C/D)")
-            plt.xlabel("Predicted")
-            plt.ylabel("True")
-            plt.xticks(range(len(class_order)), class_order)
-            plt.yticks(range(len(class_order)), class_order)
+            fig, ax = plt.subplots(figsize=(5, 4))
+            im = ax.imshow(cm, interpolation="nearest", cmap="Blues" if normalize_cm else "Oranges")
+            ax.set_title("Confusion Matrix (A/B/C/D)", fontsize=12)
+            ax.set_xlabel("Predicted", fontsize=10)
+            ax.set_ylabel("True", fontsize=10)
+            ax.set_xticks(range(len(class_order)), class_order)
+            ax.set_yticks(range(len(class_order)), class_order)
+
             # Colorbar with % when normalized
-            cbar = plt.colorbar(im, fraction=0.046, pad=0.04)
+            cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
             if normalize_cm:
                 cbar.ax.yaxis.set_major_formatter(mtick.PercentFormatter(1.0))
-                im.set_cmap("Blues")
-            else:
-                im.set_cmap("Oranges")
 
             # annotate cells
             for i in range(len(class_order)):
                 for j in range(len(class_order)):
                     val = cm[i, j]
                     text = f"{val:.0%}" if normalize_cm else f"{int(val)}"
-                    ax.text(j, i, text, ha="center", va="center", fontsize=10, weight="bold")
-            st.pyplot(fig, clear_figure=True)
+                    ax.text(j, i, text, ha="center", va="center", fontsize=9, weight="bold")
 
-            # Classification report (text)
+            _show(fig)
+
+            # Classification report (compact text)
             st.caption("Classification Report (Valid)")
             st.text(classification_report(y_valid, y_pred, labels=class_order, zero_division=0))
 
-        # --------- Segment Distribution (donut) ---------
+        # --------- Segment Distribution (compact donut) ---------
         st.subheader("Distribution of Final Segments")
         seg_counts = preds_df["final_segment"].value_counts().sort_index()
-        fig2 = plt.figure()
-        ax2 = plt.gca()
+        fig2, ax2 = plt.subplots(figsize=(4.2, 4.2))
         wedges, _ = ax2.pie(seg_counts.values, startangle=90)
         # Donut hole
         centre_circle = plt.Circle((0, 0), 0.65, fc="white")
-        fig2.gca().add_artist(centre_circle)
+        ax2.add_artist(centre_circle)
         ax2.axis("equal")
-        ax2.set_title("Final Segment Distribution (Donut)")
+        ax2.set_title("Final Segment Mix", fontsize=12)
+        # compact legend
         ax2.legend(
             wedges,
             [f"{k}: {v}" for k, v in zip(seg_counts.index, seg_counts.values)],
             loc="center left",
-            bbox_to_anchor=(1, 0.5),
+            bbox_to_anchor=(1.0, 0.5),
+            fontsize=9,
+            frameon=False
         )
-        st.pyplot(fig2, clear_figure=True)
+        _show(fig2)
 
-        # --------- Confidence by Final Segment (violins) ---------
+        # --------- Confidence by Final Segment (compact violins) ---------
         st.subheader("Prediction Confidence by Final Segment")
         order = [c for c in "ABCD" if c in seg_counts.index.tolist()]
         grouped = [preds_df.loc[preds_df["final_segment"] == seg, "pred_proba_max"].values for seg in order]
 
         if any(len(g) > 0 for g in grouped):
-            fig3 = plt.figure()
-            ax3 = plt.gca()
+            fig3, ax3 = plt.subplots(figsize=(5.5, 3.2))
             parts = ax3.violinplot(grouped, showmeans=True, showextrema=False)
             ax3.set_xticks(range(1, len(order) + 1))
             ax3.set_xticklabels(order)
             ax3.set_ylim(0, 1)
-            ax3.set_ylabel("Predicted Probability (max)")
-            ax3.set_title("Confidence by Final Segment (Violin)")
-            st.pyplot(fig3, clear_figure=True)
+            ax3.set_ylabel("Max Predicted Probability")
+            ax3.set_title("Confidence by Final Segment", fontsize=12)
+            _show(fig3)
         else:
             st.info("Not enough data per segment to draw violins.")
 
-        # --------- Feature Importance (bar + polar) ---------
+        # --------- Feature Importance (compact bar + polar) ---------
         st.subheader("Feature Importance")
 
         imp_df = pd.DataFrame(columns=["feature", "importance"])
@@ -297,37 +301,38 @@ if txns_file and sku_file:
             imp_df = imp_df.sort_values("importance", ascending=False)
             imp_df["importance_norm"] = imp_df["importance"] / imp_df["importance"].sum()
 
-            # Table (top-k)
-            st.dataframe(imp_df[["feature", "importance", "importance_norm"]].head(topk_features), use_container_width=True)
+            # Table (top-k, compact)
+            st.dataframe(
+                imp_df[["feature", "importance", "importance_norm"]].head(topk_features),
+                use_container_width=True,
+            )
 
-            # Ranked horizontal bar (top-k)
+            # Ranked horizontal bar (top-k, compact)
             top_imp = imp_df.head(topk_features).iloc[::-1]  # reverse for barh top-down
-            fig_imp = plt.figure()
-            ax_imp = plt.gca()
+            fig_imp, ax_imp = plt.subplots(figsize=(6.2, 4.0))
             ax_imp.barh(top_imp["feature"], top_imp["importance_norm"])
             ax_imp.set_xlabel("Relative Importance (gain)")
-            ax_imp.set_title("Top Feature Importances (Bar)")
+            ax_imp.set_title("Top Feature Importances", fontsize=12)
             ax_imp.xaxis.set_major_formatter(mtick.PercentFormatter(1.0))
-            st.pyplot(fig_imp, clear_figure=True)
+            _show(fig_imp)
 
-            # Polar "rose" chart (top-k)
-            fig_polar = plt.figure()
-            ax_pol = plt.subplot(111, polar=True)
+            # Polar "rose" chart (top-k, compact)
+            fig_polar, ax_pol = plt.subplots(figsize=(5.0, 5.0), subplot_kw={'polar': True})
             theta = np.linspace(0.0, 2 * np.pi, len(top_imp), endpoint=False)
             radii = top_imp["importance_norm"].values
             width = (2 * np.pi) / max(len(top_imp), 1)
-            bars = ax_pol.bar(theta, radii, width=width, bottom=0.0, align="edge")
+            ax_pol.bar(theta, radii, width=width, bottom=0.0, align="edge")
             ax_pol.set_yticklabels([])
             ax_pol.set_xticks(theta + width / 2)
             ax_pol.set_xticklabels(top_imp["feature"])
-            ax_pol.set_title("Top Feature Importances (Polar Rose)", va="bottom")
-            st.pyplot(fig_polar, clear_figure=True)
+            ax_pol.set_title("Top Features (Polar)", va="bottom", fontsize=12)
+            _show(fig_polar)
 
         # --------- Predictions & Summary ---------
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("Sample Predictions")
-            st.dataframe(preds_df.head(25), use_container_width=True)
+            st.dataframe(preds_df.head(20), use_container_width=True)
         with col2:
             st.subheader("Segment Summary (Final)")
             summary = preds_df.groupby("final_segment").size().rename("customers").reset_index()
