@@ -1,0 +1,23 @@
+import streamlit as st
+
+st.set_page_config(page_title="AI/ML Portfolio", layout="wide")
+
+st.title("📊 Real-World AI/ML Portfolio")
+st.write("""
+Welcome to my portfolio of applied AI and ML case studies.  
+Each page in the sidebar contains a **runnable demo** of a real project I've built.
+""")
+
+st.markdown("### 🔍 Projects Included")
+projects = {
+    "Waste Prediction": "Probabilistic forecasting + newsvendor ordering",
+    "Promo Sensitivity": "Price-discount elasticity & customer groups",
+    "Customer Response": "Propensity modelling with calibration",
+    "Price Volatility": "SARIMAX + ML for chemicals forecasts",
+    "Customer Health Score": "Rule-based scoring with explainability",
+    "Basket Segmentation": "Cuisine preferences using RFM + ML",
+    "Segmentation & Personalization": "Customer clusters for targeting"
+}
+
+for title, desc in projects.items():
+    st.markdown(f"**{title}** — {desc}")
