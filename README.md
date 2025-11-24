@@ -7,7 +7,7 @@ Portfolio site: https://shilpasankar.streamlit.app/
 
 ## 👋 About Me
 
-I build applied ML systems for marketing & retail: demand forecasting, promo analytics, segmentation, and AI-assisted decisioning. This repo-of-repos links to runnable projects with docs, sample data, and plots.
+I build applied ML systems in Customer & Marketing Analytics: demand forecasting, sensitivity analytics, segmentation, and AI-assisted decisioning. This repo-of-repos links to runnable projects with docs, sample data, and plots.
 
 | Project | What it does | Stack | Highlights |
 |---|---|---|---|
@@ -17,7 +17,7 @@ I build applied ML systems for marketing & retail: demand forecasting, promo ana
 | [price-volatility-ksa](./price-volatility) | Time-series w/ exogenous drivers for chemicals | SARIMAX, GBoost | MAE/MAPE, plots, CSV forecasts |
 | [customer-health-score](./customer_health_score) | Rule-based 0–100 health score | Pandas, Rules | Explainability contributions, bands |
 | [basket-segmentation](./basket_segmentation) | Cuisine preference segmentation | RFM, XGBoost, Rules | Feature importances, predictions |
-
+And more...
 ---
 
 ## 🧠 What This Portfolio Shows
