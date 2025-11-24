@@ -55,19 +55,29 @@ if txns_file and sku_file:
 
         model, metrics = train_xgb(labeled_train, feature_cols)
 
-        # XGBoost expects float32; ensure dtype before predict_proba
+        # Ensure float32 at inference
         X_all = feats_all[feature_cols].to_numpy(dtype=np.float32, copy=False)
-
+        
         proba = model.predict_proba(X_all)
         pred_idx = np.argmax(proba, axis=1)
-        pred_labels = model.classes_[pred_idx]
         pred_conf = proba.max(axis=1)
-
+        
+        # Map argmax columns -> labels using model._present_labels_ (aligned to proba columns)
+        present_labels = getattr(model, "_present_labels_", None)
+        if present_labels is None:
+            # Fallback: if not set, assume classes_ is correct
+            present_labels = getattr(model, "classes_", np.array(list("ABCD")))
+        
+        pred_label_str = np.asarray(present_labels)[pred_idx]
+        
+        # ⬇️ Show BOTH (optional): raw index and human-readable label
         preds_df = pd.DataFrame({
             "customer_id": feats_all["customer_id"].astype(str),
-            "pred_segment_model": pred_labels,
+            "pred_segment_model_idx": pred_idx,        # raw numeric index (0..k-1)
+            "pred_segment_model": pred_label_str,      # human-readable label 'A'/'B'/'C'/'D'
             "pred_proba_max": pred_conf
         })
+
 
         final_seg = apply_rules(
             feats=feats_all,
