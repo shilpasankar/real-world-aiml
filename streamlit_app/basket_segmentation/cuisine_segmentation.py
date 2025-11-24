@@ -133,6 +133,14 @@ def prepare_dataset(
 # Modeling
 # -----------------------
 def train_xgb(train_df: pd.DataFrame, feature_cols: list) -> Tuple[XGBClassifier, Dict[str, float]]:
+    from sklearn.preprocessing import LabelEncoder
+    from sklearn.metrics import accuracy_score, f1_score
+    from sklearn.utils.class_weight import compute_class_weight
+    from xgboost import XGBClassifier
+    import numpy as np
+    import pandas as pd
+
+    # Split
     train = train_df[train_df["split"] == "train"]
     valid = train_df[train_df["split"] == "valid"]
 
@@ -140,23 +148,29 @@ def train_xgb(train_df: pd.DataFrame, feature_cols: list) -> Tuple[XGBClassifier
     X_train = train[feature_cols].to_numpy(dtype=np.float32, copy=False)
     X_valid = valid[feature_cols].to_numpy(dtype=np.float32, copy=False)
 
-    # Encode y explicitly to ints
+    # ---- LABEL ENCODING FIX ----
+    # Fit encoder on the *full* intended label space, not just what's in the train split
+    full_label_space = np.array(list("ABCD"))   # your intended segments
+    le = LabelEncoder()
+    le.fit(full_label_space)
+
     y_train_raw = train["pref_segment"].astype(str).to_numpy()
     y_valid_raw = valid["pref_segment"].astype(str).to_numpy()
 
-    le = LabelEncoder()
-    y_train = le.fit_transform(y_train_raw)
+    # Transform with the fixed encoder (no "previously unseen labels" now)
+    y_train = le.transform(y_train_raw)
     y_valid = le.transform(y_valid_raw) if len(y_valid_raw) else np.array([], dtype=np.int64)
 
-    # Class weights on encoded labels
-    classes = np.arange(len(le.classes_))
+    # Class weights computed only on present classes (safe if some classes missing in train)
     if len(y_train):
-        class_weights = compute_class_weight(class_weight="balanced", classes=classes, y=y_train)
-        cw = {cls: w for cls, w in zip(classes, class_weights)}
+        present_classes = np.unique(y_train)
+        cw_vals = compute_class_weight(class_weight="balanced", classes=present_classes, y=y_train)
+        cw = {cls: w for cls, w in zip(present_classes, cw_vals)}
         w_train = np.array([cw[c] for c in y_train], dtype=np.float32)
     else:
         w_train = None
 
+    # Model
     model = XGBClassifier(
         n_estimators=300,
         max_depth=4,
@@ -167,10 +181,9 @@ def train_xgb(train_df: pd.DataFrame, feature_cols: list) -> Tuple[XGBClassifier
         eval_metric="mlogloss",
         random_state=42
     )
-
     model.fit(X_train, y_train, sample_weight=w_train)
 
-    # Validation metrics
+    # Validation metrics (handle empty valid)
     if len(y_valid):
         y_hat = model.predict(X_valid)
         acc = float(accuracy_score(y_valid, y_hat))
@@ -178,16 +191,16 @@ def train_xgb(train_df: pd.DataFrame, feature_cols: list) -> Tuple[XGBClassifier
     else:
         acc, f1 = None, None
 
-    # Keep original class names for downstream use
-    model.classes_ = le.classes_  # e.g., array(['A','B','C','D'], dtype='<U1')
-    model._label_encoder = le     # optional: keep if needed later
+    # Keep original class names for downstream mapping.
+    # NOTE: XGB's predict_proba columns will correspond to the classes *present in y_train*,
+    # so we'll store both: the global label space and the actually-trained class indices.
+    model.classes_ = le.classes_                     # ['A','B','C','D']
+    model._label_encoder = le
+    model._trained_class_indices_ = np.unique(y_train)  # e.g., array([0,1]) if only A,B were in train
 
-    metrics = {
-        "val_accuracy": acc,
-        "val_macro_f1": f1,
-        "classes": le.classes_.tolist()
-    }
+    metrics = {"val_accuracy": acc, "val_macro_f1": f1, "classes": le.classes_.tolist()}
     return model, metrics
+
 
 
 # -----------------------
