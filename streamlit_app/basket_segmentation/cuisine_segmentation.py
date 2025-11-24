@@ -132,76 +132,91 @@ def prepare_dataset(
 # -----------------------
 # Modeling
 # -----------------------
-def train_xgb(train_df: pd.DataFrame, feature_cols: list) -> Tuple[XGBClassifier, Dict[str, float]]:
+def train_xgb(train_df: pd.DataFrame, feature_cols: list) -> Tuple[object, Dict[str, float]]:
     from sklearn.preprocessing import LabelEncoder
     from sklearn.metrics import accuracy_score, f1_score
     from sklearn.utils.class_weight import compute_class_weight
     from xgboost import XGBClassifier
     import numpy as np
-    import pandas as pd
 
-    # Split
-    train = train_df[train_df["split"] == "train"]
-    valid = train_df[train_df["split"] == "valid"]
+    # Splits (fallback if train empty)
+    train = train_df[train_df["split"] == "train"].copy()
+    valid = train_df[train_df["split"] == "valid"].copy()
+    if len(train) == 0 and len(train_df) > 0:
+        train = train_df.copy()
+        valid = train_df.iloc[0:0].copy()
 
-    # X as float32
+    # Features → float32
     X_train = train[feature_cols].to_numpy(dtype=np.float32, copy=False)
     X_valid = valid[feature_cols].to_numpy(dtype=np.float32, copy=False)
 
-    # ---- LABEL ENCODING FIX ----
-    # Fit encoder on the *full* intended label space, not just what's in the train split
-    full_label_space = np.array(list("ABCD"))   # your intended segments
-    le = LabelEncoder()
-    le.fit(full_label_space)
+    # 1) Fit a FULL encoder on intended label space, for consistency
+    full_label_space = np.array(list("ABCD"))
+    le_full = LabelEncoder().fit(full_label_space)
 
-    y_train_raw = train["pref_segment"].astype(str).to_numpy()
-    y_valid_raw = valid["pref_segment"].astype(str).to_numpy()
+    y_train_full = le_full.transform(train["pref_segment"].astype(str).to_numpy())
+    y_valid_full = le_full.transform(valid["pref_segment"].astype(str).to_numpy()) if len(valid) else np.array([], dtype=np.int64)
 
-    # Transform with the fixed encoder (no "previously unseen labels" now)
-    y_train = le.transform(y_train_raw)
-    y_valid = le.transform(y_valid_raw) if len(y_valid_raw) else np.array([], dtype=np.int64)
+    # 2) Build a DENSE mapping for PRESENT training classes only (0..k-1)
+    present_full_ids = np.unique(y_train_full)
+    dense_ids = {full_id: i for i, full_id in enumerate(present_full_ids)}
+    y_train_dense = np.array([dense_ids[fid] for fid in y_train_full], dtype=np.int64)
+    y_valid_dense = np.array([dense_ids[fid] for fid in y_valid_full if fid in dense_ids], dtype=np.int64) if len(y_valid_full) else np.array([], dtype=np.int64)
 
-    # Class weights computed only on present classes (safe if some classes missing in train)
-    if len(y_train):
-        present_classes = np.unique(y_train)
-        cw_vals = compute_class_weight(class_weight="balanced", classes=present_classes, y=y_train)
-        cw = {cls: w for cls, w in zip(present_classes, cw_vals)}
-        w_train = np.array([cw[c] for c in y_train], dtype=np.float32)
+    # Class weights over dense ids
+    if len(y_train_dense):
+        cw_vals = compute_class_weight(class_weight="balanced", classes=np.unique(y_train_dense), y=y_train_dense)
+        cw = {cls: w for cls, w in zip(np.unique(y_train_dense), cw_vals)}
+        w_train = np.array([cw[c] for c in y_train_dense], dtype=np.float32)
     else:
         w_train = None
 
-    # Model
-    model = XGBClassifier(
-        n_estimators=300,
-        max_depth=4,
-        learning_rate=0.08,
-        subsample=0.9,
-        colsample_bytree=0.8,
-        objective="multi:softprob",
-        eval_metric="mlogloss",
-        random_state=42
-    )
-    model.fit(X_train, y_train, sample_weight=w_train)
-
-    # Validation metrics (handle empty valid)
-    if len(y_valid):
-        y_hat = model.predict(X_valid)
-        acc = float(accuracy_score(y_valid, y_hat))
-        f1 = float(f1_score(y_valid, y_hat, average="macro"))
+    # 3) Train XGB with k = #present classes
+    k = len(present_full_ids)
+    if k == 0:
+        # No classes -> raise a clear error
+        raise ValueError("No trainable classes found after preprocessing.")
+    if k == 1:
+        # Single-class fallback model (prob=1.0 for that class)
+        class _Dummy:
+            def __init__(self, present_full_ids_, le_full_):
+                self._present_full_ids_ = present_full_ids_
+                self._present_labels_ = le_full_.inverse_transform(present_full_ids_)
+            def predict_proba(self, X):
+                return np.ones((X.shape[0], 1), dtype=float)
+            def predict(self, X):
+                return np.repeat(self._present_labels_[0], X.shape[0])
+        model = _Dummy(present_full_ids, le_full)
+        metrics = {"val_accuracy": None, "val_macro_f1": None, "classes": le_full.classes_.tolist()}
     else:
-        acc, f1 = None, None
+        model = XGBClassifier(
+            n_estimators=300,
+            max_depth=4,
+            learning_rate=0.08,
+            subsample=0.9,
+            colsample_bytree=0.8,
+            objective="multi:softprob",
+            eval_metric="mlogloss",
+            random_state=42
+        )
+        model.fit(X_train, y_train_dense, sample_weight=w_train)
 
-    # Keep original class names for downstream mapping.
-    # NOTE: XGB's predict_proba columns will correspond to the classes *present in y_train*,
-    # so we'll store both: the global label space and the actually-trained class indices.
-    model.classes_ = le.classes_                     # ['A','B','C','D']
-    model._label_encoder = le
-    model._trained_class_indices_ = np.unique(y_train)  # e.g., array([0,1]) if only A,B were in train
+        # Validation (only on overlapping classes)
+        if len(y_valid_dense) and X_valid.shape[0]:
+            y_hat_dense = model.predict(X_valid)
+            acc = float(accuracy_score(y_valid_dense, y_hat_dense))
+            f1 = float(f1_score(y_valid_dense, y_hat_dense, average="macro"))
+        else:
+            acc, f1 = None, None
+        metrics = {"val_accuracy": acc, "val_macro_f1": f1, "classes": le_full.classes_.tolist()}
 
-    metrics = {"val_accuracy": acc, "val_macro_f1": f1, "classes": le.classes_.tolist()}
+    # 4) Store mappings for inference
+    #    _present_full_ids_: full-space class ids that are present in training, in the SAME ORDER as predict_proba columns
+    #    _present_labels_: human-readable labels aligned to predict_proba columns
+    model._present_full_ids_ = present_full_ids
+    model._present_labels_ = le_full.inverse_transform(present_full_ids)
+    model._full_labels_ = le_full.classes_         # ['A','B','C','D']
     return model, metrics
-
-
 
 # -----------------------
 # Rules & Inference
