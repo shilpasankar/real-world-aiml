@@ -161,11 +161,18 @@ if txns_file and sku_file:
         # --------- Inference (ALL customers) ---------
         X_all = feats_all[feature_cols].to_numpy(dtype=np.float32, copy=False)
         proba_all = model.predict_proba(X_all)
+        if proba_all.ndim != 2:
+            raise ValueError("Model returned unexpected probability shape.")
         idx_all = np.argmax(proba_all, axis=1)
         conf_all = proba_all.max(axis=1)
 
-        present_labels = getattr(model, "_present_labels_", None) or getattr(model, "classes_", np.array(list("ABCD")))
-        label_all = np.asarray(present_labels)[idx_all]
+        # ---- FIX: avoid ambiguous truth value with NumPy arrays
+        present_labels = getattr(model, "_present_labels_", None)
+        if present_labels is None:
+            present_labels = getattr(model, "classes_", np.array(list("ABCD")))
+        present_labels = np.asarray(present_labels)
+
+        label_all = present_labels[idx_all]
 
         preds_df = pd.DataFrame({
             "customer_id": feats_all["customer_id"].astype(str),
@@ -197,7 +204,7 @@ if txns_file and sku_file:
 
             proba_v = model.predict_proba(X_valid)
             idx_v = np.argmax(proba_v, axis=1)
-            y_pred = np.asarray(present_labels)[idx_v]
+            y_pred = present_labels[idx_v]
 
             # Metrics
             val_acc = accuracy_score(y_valid, y_pred)
@@ -221,8 +228,11 @@ if txns_file and sku_file:
         with m2:
             st.metric("Validation Macro F1", f"{val_f1:.3f}" if val_f1 is not None else "—")
         with m3:
-            trained_labels = ", ".join(map(str, getattr(model, "_present_labels_", getattr(model, "_full_labels_", []))))
-            st.metric("Classes Trained", trained_labels if trained_labels else "—")
+            trained_labels = getattr(model, "_present_labels_", None)
+            if trained_labels is None:
+                trained_labels = getattr(model, "_full_labels_", [])
+            trained_labels_str = ", ".join(map(str, trained_labels)) if isinstance(trained_labels, (list, tuple, np.ndarray)) else str(trained_labels)
+            st.metric("Classes Trained", trained_labels_str if trained_labels_str else "—")
 
         # --------- Confusion Matrix (Plotly) ---------
         if cm is not None:
