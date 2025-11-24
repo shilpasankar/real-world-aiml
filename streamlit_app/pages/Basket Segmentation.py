@@ -21,8 +21,10 @@ This version adds **validation metrics** and **rich visuals** (confusion matrix,
 """)
 
 # File uploads
-txns_file = st.file_uploader("Upload transactions CSV", type=["csv"])
+txns_file = st.file_uploader("Upload TRAIN transactions CSV", type=["csv"])
+val_file = st.file_uploader("Optional: Upload VALIDATION transactions CSV", type=["csv"])
 sku_file = st.file_uploader("Upload SKU map CSV", type=["csv"])
+
 
 with st.sidebar:
     st.header("Controls")
