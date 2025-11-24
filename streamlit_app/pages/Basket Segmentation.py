@@ -1,60 +1,63 @@
 import streamlit as st
 import pandas as pd
 import os
-import subprocess
+
+from basket_segmentation.cuisine_segmentation import (
+    read_csv,
+    prepare_dataset,
+    train_xgb,
+    apply_rules
+)
 
 st.title("🍽️ Basket Segmentation (Demo)")
 
-st.markdown("""
-Upload your transactions and SKU map CSVs to run the Basket Segmentation model.
-This demo runs your existing `cuisine_segmentation.py` pipeline and shows the results.
-""")
-
 txns_file = st.file_uploader("Upload transactions CSV", type=["csv"])
 sku_file = st.file_uploader("Upload SKU map CSV", type=["csv"])
-
-dominance_threshold = st.slider("Dominance Threshold", min_value=0.0, max_value=1.0, value=0.6)
-override_conf = st.slider("Override Confidence", min_value=0.0, max_value=1.0, value=0.55)
+dominance_threshold = st.slider("Dominance Threshold", 0.0, 1.0, 0.6)
+override_conf = st.slider("Override Confidence", 0.0, 1.0, 0.55)
 
 if txns_file and sku_file:
-    st.info("Running the model...")
+    st.info("Running model...")
 
-    # Save uploaded files to a temporary folder
-    os.makedirs("temp_uploads", exist_ok=True)
-    txns_path = os.path.join("temp_uploads", "txns.csv")
-    sku_path = os.path.join("temp_uploads", "sku_map.csv")
-    txns_file.seek(0)
-    sku_file.seek(0)
-    with open(txns_path, "wb") as f:
-        f.write(txns_file.read())
-    with open(sku_path, "wb") as f:
-        f.write(sku_file.read())
+    txns_df = pd.read_csv(txns_file)
+    sku_df = pd.read_csv(sku_file)
 
-    # Run the existing cuisine_segmentation.py script
-    cmd = [
-        "python", "../basket_segmentation/cuisine_segmentation.py",
-        "--txns", txns_path,
-        "--sku_map", sku_path,
-        "--dominance_threshold", str(dominance_threshold),
-        "--override_confidence", str(override_conf),
-        "--output_dir", "temp_uploads"
-    ]
+    # Prepare dataset
+    labeled_train, unlabeled, feats_all, feature_cols = prepare_dataset(
+        txns=txns_df,
+        sku_map=sku_df,
+        labels=None,
+        cutoff_date=None,
+        dominance_threshold=dominance_threshold
+    )
 
-    try:
-        subprocess.run(cmd, check=True)
-        st.success("Model run completed!")
+    # Train XGBoost model
+    model, metrics = train_xgb(labeled_train, feature_cols)
 
-        # Load predictions
-        preds = pd.read_csv("temp_uploads/predictions.csv")
-        st.subheader("Sample Predictions")
-        st.dataframe(preds.head())
+    # Score all customers
+    proba = model.predict_proba(feats_all[feature_cols].values)
+    pred_labels = model.classes_[proba.argmax(axis=1)]
+    pred_conf = proba.max(axis=1)
+    preds_df = pd.DataFrame({
+        "customer_id": feats_all["customer_id"],
+        "pred_segment_model": pred_labels,
+        "pred_proba_max": pred_conf
+    })
 
-        # Segment summary
-        summary = pd.read_csv("temp_uploads/segment_summary.csv")
-        st.subheader("Segment Summary")
-        st.dataframe(summary)
+    # Apply rules
+    final_seg = apply_rules(
+        feats=feats_all,
+        preds_proba=preds_df,
+        dominance_threshold=dominance_threshold,
+        override_conf=override_conf
+    )
+    preds_df["final_segment"] = final_seg.values
 
-    except subprocess.CalledProcessError as e:
-        st.error(f"Model run failed: {e}")
-else:
-    st.info("Upload both CSVs to run the segmentation.")
+    st.success("Model run completed!")
+    st.subheader("Sample Predictions")
+    st.dataframe(preds_df.head())
+
+    # Segment summary
+    summary = preds_df.groupby("final_segment").size().rename("customers").reset_index()
+    st.subheader("Segment Summary")
+    st.dataframe(summary)
