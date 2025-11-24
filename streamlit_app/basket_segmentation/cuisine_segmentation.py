@@ -1,5 +1,5 @@
 # cuisine_segmentation.py
-# Cleaned version for Streamlit Cloud
+# Clean, Streamlit-safe version
 
 import os
 import pandas as pd
@@ -27,10 +27,10 @@ def build_rfm(txn: pd.DataFrame, asof: pd.Timestamp) -> pd.DataFrame:
     freq = g.size().rename("F")
     monetary = g["amount"].sum().rename("M")
     rfm = pd.concat([recency_days, freq, monetary], axis=1).reset_index()
-    # Clip outliers
-    rfm["R"] = rfm["R"].clip(lower=0, upper=rfm["R"].quantile(0.99))
-    rfm["F"] = rfm["F"].clip(upper=rfm["F"].quantile(0.99))
-    rfm["M"] = rfm["M"].clip(upper=rfm["M"].quantile(0.99))
+    # Ensure numeric dtype
+    rfm["R"] = rfm["R"].astype(float)
+    rfm["F"] = rfm["F"].astype(float)
+    rfm["M"] = rfm["M"].astype(float)
     return rfm
 
 def build_cuisine_shares(txn: pd.DataFrame, sku_map: pd.DataFrame) -> pd.DataFrame:
@@ -88,7 +88,11 @@ def prepare_dataset(
     split_date = asof - pd.Timedelta(days=30)
     labeled_train["split"] = np.where(labeled_train["R"] > 30, "train", "valid")
 
-    feature_cols = [c for c in labeled_train.columns if c not in ["customer_id", "pref_segment", "split", "last_txn"]]
+    feature_cols = [
+        c for c in labeled_train.columns
+        if c not in ["customer_id", "pref_segment", "split", "last_txn"]
+        and np.issubdtype(labeled_train[c].dtype, np.number)
+    ]
     return labeled_train, unlabeled, feats, feature_cols
 
 # -----------------------
