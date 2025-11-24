@@ -1,6 +1,9 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
+
+from sklearn.metrics import confusion_matrix, classification_report, accuracy_score, f1_score
 
 from basket_segmentation.cuisine_segmentation import (
     prepare_dataset,
@@ -13,7 +16,7 @@ st.title("🍽️ Basket Segmentation (Demo)")
 
 st.markdown("""
 Upload your **transactions CSV** and **SKU map CSV** to run the Basket Segmentation model.
-This demo uses your existing RFM + XGBoost + Rules pipeline.
+This demo uses your RFM + XGBoost + Rules pipeline, **now with validation & visuals**.
 """)
 
 # File uploads
@@ -41,6 +44,7 @@ if txns_file and sku_file:
     )
 
     try:
+        # Prepare features & split
         labeled_train, unlabeled, feats_all, feature_cols = prepare_dataset(
             txns=txns_df,
             sku_map=sku_df,
@@ -49,35 +53,29 @@ if txns_file and sku_file:
             dominance_threshold=dominance_threshold,
         )
 
-        # Optional debug panel
+        # Optional debug
         with st.expander("Debug: Feature dtypes"):
             st.write(feats_all[feature_cols].dtypes)
 
+        # Train
         model, metrics = train_xgb(labeled_train, feature_cols)
 
-        # Ensure float32 at inference
+        # ---------- Inference on ALL customers ----------
         X_all = feats_all[feature_cols].to_numpy(dtype=np.float32, copy=False)
-        
-        proba = model.predict_proba(X_all)
-        pred_idx = np.argmax(proba, axis=1)
-        pred_conf = proba.max(axis=1)
-        
-        # Map argmax columns -> labels using model._present_labels_ (aligned to proba columns)
+        proba_all = model.predict_proba(X_all)
+        idx_all = np.argmax(proba_all, axis=1)
+        conf_all = proba_all.max(axis=1)
+
         present_labels = getattr(model, "_present_labels_", None)
         if present_labels is None:
-            # Fallback: if not set, assume classes_ is correct
             present_labels = getattr(model, "classes_", np.array(list("ABCD")))
-        
-        pred_label_str = np.asarray(present_labels)[pred_idx]
-        
-        # ⬇️ Show BOTH (optional): raw index and human-readable label
+        label_all = np.asarray(present_labels)[idx_all]
+
         preds_df = pd.DataFrame({
             "customer_id": feats_all["customer_id"].astype(str),
-            "pred_segment_model_idx": pred_idx,        # raw numeric index (0..k-1)
-            "pred_segment_model": pred_label_str,      # human-readable label 'A'/'B'/'C'/'D'
-            "pred_proba_max": pred_conf
+            "pred_segment_model": label_all,       # human-readable A/B/C/D
+            "pred_proba_max": conf_all
         })
-
 
         final_seg = apply_rules(
             feats=feats_all,
@@ -87,21 +85,82 @@ if txns_file and sku_file:
         )
         preds_df["final_segment"] = final_seg.values
 
+        # ---------- VALIDATION (on split == 'valid') ----------
+        valid_mask = labeled_train["split"] == "valid"
+        has_valid = bool(valid_mask.any())
+
+        val_acc = None
+        val_f1 = None
+        cm = None
+        class_order = np.array(list("ABCD"))
+
+        if has_valid:
+            valid_df = labeled_train.loc[valid_mask]
+            X_valid = valid_df[feature_cols].to_numpy(dtype=np.float32, copy=False)
+            y_valid = valid_df["pref_segment"].astype(str).to_numpy()
+
+            proba_v = model.predict_proba(X_valid)
+            idx_v = np.argmax(proba_v, axis=1)
+            y_pred = np.asarray(present_labels)[idx_v]
+
+            # Compute metrics
+            val_acc = accuracy_score(y_valid, y_pred)
+            val_f1 = f1_score(y_valid, y_pred, average="macro")
+
+            # Confusion matrix in fixed A/B/C/D order (missing classes appear as 0 rows/cols)
+            cm = confusion_matrix(y_valid, y_pred, labels=class_order)
+
+        # ---------- UI: Results ----------
         st.success("Model run completed!")
 
+        # Top metrics row
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            st.metric("Validation Accuracy", f"{val_acc:.3f}" if val_acc is not None else "—")
+        with m2:
+            st.metric("Validation Macro F1", f"{val_f1:.3f}" if val_f1 is not None else "—")
+        with m3:
+            st.metric("Classes Trained", ", ".join(getattr(model, "_present_labels_", getattr(model, "_full_labels_", []))))
+
+        # Confusion matrix
+        if cm is not None:
+            st.subheader("Confusion Matrix (Valid)")
+            fig = plt.figure()
+            plt.imshow(cm, interpolation="nearest")
+            plt.title("Confusion Matrix (A/B/C/D)")
+            plt.xlabel("Predicted")
+            plt.ylabel("True")
+            plt.xticks(range(len(class_order)), class_order)
+            plt.yticks(range(len(class_order)), class_order)
+            # annotate cells
+            for i in range(len(class_order)):
+                for j in range(len(class_order)):
+                    plt.text(j, i, int(cm[i, j]), ha="center", va="center")
+            st.pyplot(fig, clear_figure=True)
+
+            # Classification report (text)
+            st.caption("Classification Report (Valid)")
+            st.text(classification_report(y_valid, y_pred, labels=class_order, zero_division=0))
+
+        # Predictions & summary
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("Sample Predictions")
             st.dataframe(preds_df.head(25), use_container_width=True)
-
         with col2:
-            st.subheader("Segment Summary")
+            st.subheader("Segment Summary (Final)")
             summary = preds_df.groupby("final_segment").size().rename("customers").reset_index()
             st.dataframe(summary, use_container_width=True)
 
-        # Optional: show validation metrics if available
-        if metrics.get("val_accuracy") is not None:
-            st.caption(f"Validation Accuracy: {metrics['val_accuracy']:.3f} | Macro F1: {metrics['val_macro_f1']:.3f}")
+        # Quick bar chart of final segments
+        st.subheader("Distribution of Final Segments")
+        seg_counts = preds_df["final_segment"].value_counts().sort_index()
+        fig2 = plt.figure()
+        plt.bar(seg_counts.index.astype(str), seg_counts.values)
+        plt.xlabel("Final Segment")
+        plt.ylabel("Customers")
+        plt.title("Final Segment Distribution")
+        st.pyplot(fig2, clear_figure=True)
 
         # Download results
         st.download_button(
