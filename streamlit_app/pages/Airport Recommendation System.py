@@ -15,8 +15,8 @@ import plotly.graph_objects as go
 # -----------------------
 # Page setup
 # -----------------------
-st.set_page_config(page_title="🧭 Airport Recommendation System (Plotly)", layout="wide")
-st.title("🧭 Airport Recommendation System (Demo) — Plotly Edition")
+st.set_page_config(page_title="🧭 Airport Recommendation System", layout="wide")
+st.title("🧭 Airport Recommendation System (Demo)")
 
 st.markdown("""
 **What this page does**  
