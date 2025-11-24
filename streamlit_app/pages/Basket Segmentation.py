@@ -32,7 +32,7 @@ if txns_file and sku_file:
 
     # Run the existing cuisine_segmentation.py script
     cmd = [
-        "python", "basket_segmentation/cuisine_segmentation.py",
+        "python", "../basket_segmentation/cuisine_segmentation.py",
         "--txns", txns_path,
         "--sku_map", sku_path,
         "--dominance_threshold", str(dominance_threshold),
