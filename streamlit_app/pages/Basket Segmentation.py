@@ -4,7 +4,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import ticker as mtick
 
-from sklearn.metrics import confusion_matrix, classification_report, accuracy_score, f1_score
+from sklearn.metrics import (
+    confusion_matrix,
+    classification_report,
+    accuracy_score,
+    f1_score,
+)
 
 from basket_segmentation.cuisine_segmentation import (
     prepare_dataset,
@@ -12,19 +17,24 @@ from basket_segmentation.cuisine_segmentation import (
     apply_rules,
 )
 
+# -----------------------
+# Page setup
+# -----------------------
 st.set_page_config(page_title="Basket Segmentation", layout="wide")
 st.title("🍽️ Basket Segmentation (Demo)")
 
 st.markdown("""
-Upload your **transactions CSV** and **SKU map CSV** to run the Basket Segmentation model.
-This version adds **validation metrics** and **rich visuals** (confusion matrix, donut chart, violins, and feature importance).
+Upload your **TRAIN transactions CSV**, optional **VALIDATION transactions CSV**, and **SKU map CSV**.
+This version includes **validation metrics** and **rich visuals** (confusion matrix with normalization, donut chart,
+violin plots for confidence, and feature-importance charts).
 """)
 
-# File uploads
+# -----------------------
+# Uploaders
+# -----------------------
 txns_file = st.file_uploader("Upload TRAIN transactions CSV", type=["csv"])
-val_file = st.file_uploader("Optional: Upload VALIDATION transactions CSV", type=["csv"])
-sku_file = st.file_uploader("Upload SKU map CSV", type=["csv"])
-
+val_file  = st.file_uploader("Optional: Upload VALIDATION transactions CSV", type=["csv"])
+sku_file  = st.file_uploader("Upload SKU map CSV", type=["csv"])
 
 with st.sidebar:
     st.header("Controls")
@@ -33,41 +43,94 @@ with st.sidebar:
     normalize_cm = st.checkbox("Normalize Confusion Matrix", value=True)
     topk_features = st.slider("Top-K Features to Plot", 5, 30, 15, 1)
 
-if txns_file and sku_file:
-    st.info("Running Basket Segmentation model...")
-
-    # ---- Robust CSV reads (dtype-safe) ----
-    txns_df = pd.read_csv(
-        txns_file,
+# -----------------------
+# Helpers
+# -----------------------
+def _read_txn_csv(file):
+    df = pd.read_csv(
+        file,
         dtype={"customer_id": "string", "sku": "string"},
         parse_dates=["date"],
         keep_default_na=True,
     )
-    txns_df["amount"] = pd.to_numeric(txns_df["amount"], errors="coerce").fillna(0.0).astype("float32")
+    # Robust numeric
+    df["amount"] = pd.to_numeric(df.get("amount", 0.0), errors="coerce").fillna(0.0).astype("float32")
+    # Optional region default
+    if "region" not in df.columns:
+        df["region"] = "NA"
+    return df
 
+# -----------------------
+# Main
+# -----------------------
+if txns_file and sku_file:
+    st.info("Running Basket Segmentation model...")
+
+    # Read inputs
+    txns_df = _read_txn_csv(txns_file)
     sku_df = pd.read_csv(
         sku_file,
         dtype={"sku": "string", "cuisine_tag": "string"},
     )
 
+    # Optional validation
+    val_df = _read_txn_csv(val_file) if val_file is not None else None
+
     try:
-        # Prepare features & split
-        labeled_train, unlabeled, feats_all, feature_cols = prepare_dataset(
-            txns=txns_df,
-            sku_map=sku_df,
-            labels=None,
-            cutoff_date=None,
-            dominance_threshold=dominance_threshold,
-        )
+        # --------- Prepare datasets ---------
+        if val_df is not None:
+            st.info("Using uploaded validation dataset (no internal split).")
+
+            # Prepare separately for train & valid, then tag splits
+            labeled_train_only, _, feats_all_train, feature_cols = prepare_dataset(
+                txns=txns_df,
+                sku_map=sku_df,
+                labels=None,
+                cutoff_date=None,
+                dominance_threshold=dominance_threshold,
+            )
+            labeled_valid_only, _, feats_all_valid, _ = prepare_dataset(
+                txns=val_df,
+                sku_map=sku_df,
+                labels=None,
+                cutoff_date=None,
+                dominance_threshold=dominance_threshold,
+            )
+
+            labeled_train_only["split"] = "train"
+            labeled_valid_only["split"] = "valid"
+
+            labeled_train = pd.concat([labeled_train_only, labeled_valid_only], ignore_index=True)
+            # For whole-population predictions/visuals, you may want train+val population together:
+            feats_all = pd.concat([feats_all_train, feats_all_valid], ignore_index=True)
+
+            # If validation introduced new numeric features (e.g., new cuisines), ensure columns exist in feats_all
+            for col in feature_cols:
+                if col not in feats_all.columns:
+                    feats_all[col] = 0.0
+        else:
+            labeled_train, _, feats_all, feature_cols = prepare_dataset(
+                txns=txns_df,
+                sku_map=sku_df,
+                labels=None,
+                cutoff_date=None,
+                dominance_threshold=dominance_threshold,
+            )
 
         # Optional debug
         with st.expander("Debug: Feature dtypes"):
-            st.write(feats_all[feature_cols].dtypes)
+            try:
+                st.write(feats_all[feature_cols].dtypes)
+            except Exception:
+                st.write("Feature dtypes unavailable (no features).")
 
-        # Train
+        # --------- Train ---------
+        if len(labeled_train) == 0:
+            raise ValueError("No labeled rows available for training (segments A-D). Check your inputs.")
+
         model, metrics = train_xgb(labeled_train, feature_cols)
 
-        # ---------- Inference on ALL customers ----------
+        # --------- Inference on ALL customers (for outputs & visuals) ---------
         X_all = feats_all[feature_cols].to_numpy(dtype=np.float32, copy=False)
         proba_all = model.predict_proba(X_all)
         idx_all = np.argmax(proba_all, axis=1)
@@ -92,7 +155,7 @@ if txns_file and sku_file:
         )
         preds_df["final_segment"] = final_seg.values
 
-        # ---------- VALIDATION (on split == 'valid') ----------
+        # --------- VALIDATION (split == 'valid') ---------
         valid_mask = labeled_train["split"] == "valid"
         has_valid = bool(valid_mask.any())
 
@@ -102,7 +165,7 @@ if txns_file and sku_file:
         class_order = np.array(list("ABCD"))
 
         if has_valid:
-            valid_df = labeled_train.loc[valid_mask]
+            valid_df = labeled_train.loc[valid_mask].copy()
             X_valid = valid_df[feature_cols].to_numpy(dtype=np.float32, copy=False)
             y_valid = valid_df["pref_segment"].astype(str).to_numpy()
 
@@ -110,11 +173,11 @@ if txns_file and sku_file:
             idx_v = np.argmax(proba_v, axis=1)
             y_pred = np.asarray(present_labels)[idx_v]
 
-            # Compute metrics
+            # Metrics
             val_acc = accuracy_score(y_valid, y_pred)
             val_f1 = f1_score(y_valid, y_pred, average="macro")
 
-            # Confusion matrix in fixed A/B/C/D order (missing classes appear as 0)
+            # Confusion matrix in fixed A/B/C/D order
             cm_counts = confusion_matrix(y_valid, y_pred, labels=class_order)
             if normalize_cm:
                 with np.errstate(divide="ignore", invalid="ignore"):
@@ -123,7 +186,7 @@ if txns_file and sku_file:
             else:
                 cm = cm_counts
 
-        # ---------- UI: Metrics ----------
+        # --------- UI: Metrics ---------
         st.success("Model run completed!")
 
         m1, m2, m3 = st.columns(3)
@@ -135,7 +198,7 @@ if txns_file and sku_file:
             trained_labels = ", ".join(map(str, getattr(model, "_present_labels_", getattr(model, "_full_labels_", []))))
             st.metric("Classes Trained", trained_labels if trained_labels else "—")
 
-        # ---------- Confusion Matrix (rich) ----------
+        # --------- Confusion Matrix (rich) ---------
         if cm is not None:
             st.subheader("Confusion Matrix")
             fig = plt.figure()
@@ -166,7 +229,7 @@ if txns_file and sku_file:
             st.caption("Classification Report (Valid)")
             st.text(classification_report(y_valid, y_pred, labels=class_order, zero_division=0))
 
-        # ---------- Segment Distribution (donut) ----------
+        # --------- Segment Distribution (donut) ---------
         st.subheader("Distribution of Final Segments")
         seg_counts = preds_df["final_segment"].value_counts().sort_index()
         fig2 = plt.figure()
@@ -177,10 +240,15 @@ if txns_file and sku_file:
         fig2.gca().add_artist(centre_circle)
         ax2.axis("equal")
         ax2.set_title("Final Segment Distribution (Donut)")
-        ax2.legend(wedges, [f"{k}: {v}" for k, v in zip(seg_counts.index, seg_counts.values)], loc="center left", bbox_to_anchor=(1, 0.5))
+        ax2.legend(
+            wedges,
+            [f"{k}: {v}" for k, v in zip(seg_counts.index, seg_counts.values)],
+            loc="center left",
+            bbox_to_anchor=(1, 0.5),
+        )
         st.pyplot(fig2, clear_figure=True)
 
-        # ---------- Confidence by Final Segment (violins) ----------
+        # --------- Confidence by Final Segment (violins) ---------
         st.subheader("Prediction Confidence by Final Segment")
         order = [c for c in "ABCD" if c in seg_counts.index.tolist()]
         grouped = [preds_df.loc[preds_df["final_segment"] == seg, "pred_proba_max"].values for seg in order]
@@ -198,10 +266,9 @@ if txns_file and sku_file:
         else:
             st.info("Not enough data per segment to draw violins.")
 
-        # ---------- Feature Importance ----------
+        # --------- Feature Importance (bar + polar) ---------
         st.subheader("Feature Importance")
 
-        # Build importance DataFrame
         imp_df = pd.DataFrame(columns=["feature", "importance"])
 
         booster_getter = getattr(model, "get_booster", None)
@@ -234,16 +301,16 @@ if txns_file and sku_file:
             st.dataframe(imp_df[["feature", "importance", "importance_norm"]].head(topk_features), use_container_width=True)
 
             # Ranked horizontal bar (top-k)
+            top_imp = imp_df.head(topk_features).iloc[::-1]  # reverse for barh top-down
             fig_imp = plt.figure()
             ax_imp = plt.gca()
-            top_imp = imp_df.head(topk_features).iloc[::-1]  # reverse for barh top-down
             ax_imp.barh(top_imp["feature"], top_imp["importance_norm"])
             ax_imp.set_xlabel("Relative Importance (gain)")
             ax_imp.set_title("Top Feature Importances (Bar)")
             ax_imp.xaxis.set_major_formatter(mtick.PercentFormatter(1.0))
             st.pyplot(fig_imp, clear_figure=True)
 
-            # Polar "rose" chart (top-k) for a more expressive visual
+            # Polar "rose" chart (top-k)
             fig_polar = plt.figure()
             ax_pol = plt.subplot(111, polar=True)
             theta = np.linspace(0.0, 2 * np.pi, len(top_imp), endpoint=False)
@@ -256,7 +323,7 @@ if txns_file and sku_file:
             ax_pol.set_title("Top Feature Importances (Polar Rose)", va="bottom")
             st.pyplot(fig_polar, clear_figure=True)
 
-        # ---------- Predictions & Summary ----------
+        # --------- Predictions & Summary ---------
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("Sample Predictions")
@@ -266,16 +333,16 @@ if txns_file and sku_file:
             summary = preds_df.groupby("final_segment").size().rename("customers").reset_index()
             st.dataframe(summary, use_container_width=True)
 
-        # ---------- Download ----------
+        # --------- Download ---------
         st.download_button(
             label="Download predictions as CSV",
             data=preds_df.to_csv(index=False).encode("utf-8"),
             file_name="basket_segmentation_predictions.csv",
-            mime="text/csv"
+            mime="text/csv",
         )
 
     except Exception as e:
         st.error(f"Model run failed: {e}")
 
 else:
-    st.info("Upload both transactions CSV and SKU map CSV to run the model.")
+    st.info("Upload TRAIN transactions CSV, optional VALIDATION transactions CSV, and the SKU map CSV to run the model.")
