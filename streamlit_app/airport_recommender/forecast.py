@@ -1,9 +1,5 @@
 # streamlit_app/airport_recommender/forecast.py
-# Streamlit Forecast Demo (Prophet) — compact visuals, uploads, metrics, downloads
-# - Upload your own time series (columns: ds, y) or simulate data
-# - Optional separate VALIDATION file; otherwise uses a test split from TRAIN
-# - Fixed-size Matplotlib visuals, MAE/RMSE/MAPE, and a split summary table
-# - Download forecast CSV
+# Streamlit Forecast Demo (Prophet) — uploads, validation, fixed-size annotated visuals
 
 import io
 import numpy as np
@@ -18,11 +14,13 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 st.set_page_config(page_title="✈️ Airport Passenger Forecast", layout="wide")
 st.title("✈️ Airport Passenger Forecast (Prophet)")
 
-st.markdown(
-    "Upload daily passenger data (`ds` date, `y` count). "
-    "Optionally provide a separate **VALIDATION** CSV. "
-    "If no validation is uploaded, a TEST window is carved from the end of TRAIN."
-)
+st.markdown("""
+**What this page does**  
+- Upload daily passenger data (`ds` = date, `y` = count), optionally a separate **Validation** CSV.  
+- Train a **Prophet** model with configurable seasonality and changepoint prior.  
+- Get **MAE / RMSE / MAPE** on Test or Validation, plus **interpretable visuals**.  
+- On-chart annotations explain *what to look for* (bands, seasonality, confidence).  
+""")
 
 # ---------- Sidebar Controls ----------
 with st.sidebar:
@@ -33,14 +31,14 @@ with st.sidebar:
     weekly = st.checkbox("Weekly seasonality", value=True)
     daily  = st.checkbox("Daily seasonality", value=False)
     cps = st.slider("Changepoint prior scale", 0.01, 0.5, 0.1, 0.01)
-    st.caption("Plots use fixed figsize + tight layout for clean screenshots.")
+    st.caption("All plots use fixed figsize + tight layout for clean screenshots.")
 
 # ---------- Uploaders ----------
 train_file = st.file_uploader("Upload TRAIN time-series CSV (columns: ds, y)", type=["csv"])
 val_file   = st.file_uploader("Optional: Upload VALIDATION CSV (columns: ds, y)", type=["csv"])
 
 # ---------- Helpers ----------
-def _compact_show(fig, width=6.5, height=3.6):
+def _compact_show(fig, width=6.8, height=3.8):
     fig.set_size_inches(width, height)
     plt.tight_layout(pad=0.5)
     st.pyplot(fig, use_container_width=False, clear_figure=True)
@@ -84,8 +82,7 @@ except Exception as e:
     st.error(f"Failed to read TRAIN CSV: {e}")
     st.stop()
 
-# If validation provided: we'll use TRAIN file as-is for fitting, VALIDATION for evaluation
-# Else: carve TEST from the tail of TRAIN file
+# Validation or internal test split
 if val_file is not None:
     try:
         val_df = _read_series(val_file)
@@ -93,7 +90,6 @@ if val_file is not None:
     except Exception as e:
         st.error(f"Failed to read VALIDATION CSV: {e}")
         st.stop()
-    # Train on all of TRAIN
     train_df = train_df_full.copy()
     test_df = None
 else:
@@ -103,76 +99,93 @@ else:
     train_df = train_df_full.iloc[:-test_days].copy()
     test_df  = train_df_full.iloc[-test_days:].copy()
 
-# ---------- Fit ----------
+# ---------- Fit & Forecast ----------
 model = _fit_prophet(train_df, yearly=yearly, weekly=weekly, daily=daily, cps=cps)
-
 future = model.make_future_dataframe(periods=horizon, freq="D")
 forecast = model.predict(future)
 fc_idx = forecast.set_index("ds")
 
 # ---------- Evaluate ----------
-metrics_source = []
+metrics_label = "Validation" if val_file is not None else "Test"
 if val_file is not None:
     common = val_df["ds"]
     if not set(common).issubset(set(fc_idx.index)):
         st.warning("Validation dates extend beyond forecast range; metrics computed on overlapping dates only.")
         common = common[common.isin(fc_idx.index)]
-    if len(common) > 0:
-        yhat_val = fc_idx.loc[common, "yhat"].values
-        ytrue_val = val_df.set_index("ds").loc[common, "y"].values
-        mae_val = mean_absolute_error(ytrue_val, yhat_val)
-        rmse_val = mean_squared_error(ytrue_val, yhat_val, squared=False)
-        mape_val = _mape(ytrue_val, yhat_val)
-        metrics_source.append(("Validation", mae_val, rmse_val, mape_val))
+    yhat = fc_idx.loc[common, "yhat"].values
+    ytrue = val_df.set_index("ds").loc[common, "y"].values
 else:
-    # Evaluate on the held-out TEST slice from TRAIN
     common = test_df["ds"]
-    yhat_test = fc_idx.loc[common, "yhat"].values
-    ytrue_test = test_df["y"].values
-    mae_test = mean_absolute_error(ytrue_test, yhat_test)
-    rmse_test = mean_squared_error(ytrue_test, yhat_test, squared=False)
-    mape_test = _mape(ytrue_test, yhat_test)
-    metrics_source.append(("Test", mae_test, rmse_test, mape_test))
+    yhat = fc_idx.loc[common, "yhat"].values
+    ytrue = test_df["y"].values
+
+mae = mean_absolute_error(ytrue, yhat)
+rmse = mean_squared_error(ytrue, yhat, squared=False)
+mape = _mape(ytrue, yhat)
 
 # ---------- Metrics Row ----------
-if metrics_source:
-    label, m_mae, m_rmse, m_mape = metrics_source[0]
-    c1, c2, c3 = st.columns(3)
-    c1.metric(f"MAE ({label})", f"{m_mae:,.0f}")
-    c2.metric(f"RMSE ({label})", f"{m_rmse:,.0f}")
-    c3.metric(f"MAPE ({label})", f"{m_mape*100:,.1f}%")
+c1, c2, c3 = st.columns(3)
+c1.metric(f"MAE ({metrics_label})", f"{mae:,.0f}")
+c2.metric(f"RMSE ({metrics_label})", f"{rmse:,.0f}")
+c3.metric(f"MAPE ({metrics_label})", f"{mape*100:,.1f}%")
 
 # ---------- Split Overview ----------
 st.subheader("Train / Test / Forecast Overview")
 rows = [("Train", train_df["ds"].min().date(), train_df["ds"].max().date(), len(train_df))]
-if test_df is not None:
-    rows.append(("Test", test_df["ds"].min().date(), test_df["ds"].max().date(), len(test_df)))
-else:
+if val_file is not None:
     rows.append(("Validation", val_df["ds"].min().date(), val_df["ds"].max().date(), len(val_df)))
+else:
+    rows.append(("Test", test_df["ds"].min().date(), test_df["ds"].max().date(), len(test_df)))
 rows.append(("Forecast (Future)", forecast["ds"].iloc[-horizon].date(), forecast["ds"].iloc[-1].date(), horizon))
 split_info = pd.DataFrame(rows, columns=["Split", "Start Date", "End Date", "Rows"])
 st.dataframe(split_info, use_container_width=True, hide_index=True)
 
-# ---------- Plot: Forecast vs Actuals ----------
+# ---------- Plot: Forecast vs Actuals (ANNOTATED) ----------
 st.subheader("Forecast vs Actuals")
 fig1 = model.plot(forecast, xlabel="Date", ylabel="Passengers")
 fig1.axes[0].set_title("Passenger Count Forecast", fontsize=12)
 ax = fig1.axes[0]
 
-# Overlay actuals: TRAIN and (TEST or VALIDATION)
+# Overlay actuals
 ax.plot(train_df["ds"], train_df["y"], linestyle="none", marker="o", ms=2.5, color="black", label="Actual (Train)")
-if test_df is not None:
-    ax.plot(test_df["ds"], test_df["y"], linestyle="none", marker="o", ms=2.5, color="red", label="Actual (Test)")
-elif val_file is not None:
+if val_file is not None:
     ax.plot(val_df["ds"], val_df["y"], linestyle="none", marker="o", ms=2.5, color="red", label="Actual (Validation)")
+else:
+    ax.plot(test_df["ds"], test_df["y"], linestyle="none", marker="o", ms=2.5, color="red", label="Actual (Test)")
 
+# Annotation: CI bands & interpretation
+ax.annotate(
+    "Blue line = forecast (yhat)\nShaded band = confidence interval\nRed points = held-out actuals",
+    xy=(0.01, 0.97), xycoords="axes fraction",
+    va="top", ha="left",
+    fontsize=9,
+    bbox=dict(boxstyle="round,pad=0.35", fc="white", ec="0.8", alpha=0.9)
+)
 ax.legend(loc="upper left", fontsize=8, frameon=False)
-_compact_show(fig1, width=7.0, height=3.8)
+# Small note near end of forecast
+ax.annotate("Forecast horizon", xy=(forecast["ds"].iloc[-horizon], forecast["yhat"].iloc[-horizon]),
+            xytext=(15, 15), textcoords="offset points",
+            arrowprops=dict(arrowstyle="->", lw=0.8), fontsize=9)
 
-# ---------- Plot: Components ----------
+def _compact_show(fig, width=6.8, height=3.8):
+    fig.set_size_inches(width, height)
+    plt.tight_layout(pad=0.5)
+    st.pyplot(fig, use_container_width=False, clear_figure=True)
+
+_compact_show(fig1)
+
+# ---------- Plot: Components (ANNOTATED) ----------
 st.subheader("Decomposition (Trend & Seasonality)")
 fig2 = model.plot_components(forecast)
-_compact_show(fig2, width=7.0, height=4.8)
+# Add small on-figure notes
+for axi in fig2.axes:
+    axi.annotate(
+        "Interpretation:\n• Trend shows long-term movement\n• Weekly/Yearly show periodic patterns",
+        xy=(0.01, 0.97), xycoords="axes fraction",
+        va="top", ha="left", fontsize=8,
+        bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="0.8", alpha=0.9)
+    )
+_compact_show(fig2, width=6.8, height=4.6)
 
 # ---------- Preview & Download ----------
 with st.expander("Preview Forecast Data"):
