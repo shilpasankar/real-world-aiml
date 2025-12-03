@@ -1,5 +1,4 @@
-
-```python
+python
 import argparse
 import os
 from datetime import datetime, timedelta
