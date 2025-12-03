@@ -133,7 +133,6 @@ def features_engagement(
         }
     )
 
-    # sanity: numeric coercion (protect against weird CSVs)
     out = _coerce_numeric(out, exclude=["customer_id"])
     return out
 
@@ -362,15 +361,12 @@ def build_scores(
         if k in df.columns:
             weighted_sum += df[k] * v
         else:
-            # missing feature → treat as 0 contribution
             weighted_sum += 0.0
     df["base_score"] = (weighted_sum / total_w) * 100.0
 
     # Policy adjustments
-    # tenure bonus up to +6
     df["tenure_bonus"] = df.get("tenure_months_01", 0.0) * 6.0
-    # KYC penalty up to -4
-    df["kyc_penalty_pts"] = df["kyc_penalty"].clip(0, 4) * 1.0  # already in 0..4
+    df["kyc_penalty_pts"] = df["kyc_penalty"].clip(0, 4) * 1.0
 
     df["score"] = df["base_score"] + df["tenure_bonus"] - df["kyc_penalty_pts"]
     df["score"] = df["score"].clip(0, 100)
