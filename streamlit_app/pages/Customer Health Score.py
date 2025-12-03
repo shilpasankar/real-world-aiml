@@ -1,10 +1,30 @@
 import os
-from datetime import date, datetime
+import sys
+from datetime import date
 
 import pandas as pd
 import streamlit as st
+import plotly.express as px
 
-# Try to import from the local package layout
+# -----------------------------------------------------------------------------
+# Import health_scoring with a robust path setup
+# -----------------------------------------------------------------------------
+# Assumed layout:
+#   real-world-aiml/
+#     streamlit_app/
+#       customer_health/
+#         health_scoring.py
+#       pages/
+#         Customer Health Score.py  (this file)
+#
+# We add streamlit_app/ to sys.path so `customer_health.health_scoring` works.
+# -----------------------------------------------------------------------------
+THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+APP_ROOT = os.path.abspath(os.path.join(THIS_DIR, ".."))  # streamlit_app
+
+if APP_ROOT not in sys.path:
+    sys.path.insert(0, APP_ROOT)
+
 try:
     from customer_health.health_scoring import (
         features_engagement,
@@ -13,24 +33,20 @@ try:
         features_policy,
         build_scores,
     )
-except ModuleNotFoundError:
-    # Fallback: add parent dir to path if running directly
-    import sys
-    HERE = os.path.dirname(__file__)
-    PARENT = os.path.abspath(os.path.join(HERE, ".."))
-    if PARENT not in sys.path:
-        sys.path.insert(0, PARENT)
-    from customer_health.health_scoring import (  # type: ignore
-        features_engagement,
-        features_service,
-        features_value_momentum,
-        features_policy,
-        build_scores,
+except Exception as e:
+    st.set_page_config(page_title="Customer Health Score", page_icon="🏦", layout="wide")
+    st.error(
+        "❌ Could not import `customer_health.health_scoring`.\n\n"
+        "Check that:\n"
+        "- `streamlit_app/customer_health/health_scoring.py` exists, and\n"
+        "- the folder is named exactly `customer_health`.\n\n"
+        f"Python error: `{e}`"
     )
+    st.stop()
 
-# ----------------------
+# -----------------------------------------------------------------------------
 # Page config
-# ----------------------
+# -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="Customer Health Score",
     page_icon="🏦",
@@ -43,20 +59,21 @@ st.caption("Rule-based 0–100 scoring demo for UAE banking customers")
 with st.expander("ℹ️ What is this?", expanded=False):
     st.write(
         """
-        This page wraps the **rule-based customer health score** you defined in
+        This page wraps the **rule-based customer health score** defined in
         `customer_health/health_scoring.py`.
 
         It lets you:
-        - Upload the required input CSVs
-        - Compute per-customer scores and bands (Red / Amber / Green)
-        - Explore score distributions and top/bottom customers
-        - Inspect feature-level contributions for a selected customer
+
+        - Upload the required input CSVs  
+        - Compute per-customer scores and bands (Red / Amber / Green)  
+        - Explore score distributions and band mix with **Plotly visuals**  
+        - Inspect **feature-level contributions** for a selected customer
         """
     )
 
-# ----------------------
+# -----------------------------------------------------------------------------
 # Sidebar controls
-# ----------------------
+# -----------------------------------------------------------------------------
 st.sidebar.header("Configuration")
 
 ref_date_input = st.sidebar.date_input(
@@ -98,10 +115,9 @@ required_cols = {
     "products.csv": ["customer_id", "event_date", "event"],
 }
 
-
-# ----------------------
+# -----------------------------------------------------------------------------
 # Helpers
-# ----------------------
+# -----------------------------------------------------------------------------
 def _parse_csv(uploaded, name: str) -> pd.DataFrame:
     if uploaded is None:
         raise ValueError(f"Missing required file: {name}")
@@ -147,6 +163,85 @@ def _compute_scores(
     return scored
 
 
+# -----------------------------------------------------------------------------
+# Plotly visual helpers (fixed sizes)
+# -----------------------------------------------------------------------------
+DEFAULT_HEIGHT = 350  # keep charts neat & non-giant
+
+
+def score_distribution_chart(scored: pd.DataFrame):
+    # Bin scores into ranges for a nice bar chart
+    bins = pd.interval_range(start=0, end=100, periods=20)
+    binned = pd.cut(scored["score"], bins)
+    dist = binned.value_counts().sort_index().reset_index()
+    dist.columns = ["score_bin", "count"]
+    dist["bin_label"] = dist["score_bin"].astype(str)
+
+    fig = px.bar(
+        dist,
+        x="bin_label",
+        y="count",
+        title="Customer Health Score Distribution",
+    )
+    fig.update_layout(
+        height=DEFAULT_HEIGHT,
+        xaxis_title="Score bin",
+        yaxis_title="Number of customers",
+        margin=dict(l=10, r=10, t=60, b=40),
+    )
+    return fig
+
+
+def band_breakdown_chart(scored: pd.DataFrame):
+    band_counts = (
+        scored["band"]
+        .value_counts()
+        .reindex(["Green", "Amber", "Red"])
+        .fillna(0)
+        .astype(int)
+        .reset_index()
+    )
+    band_counts.columns = ["band", "count"]
+
+    fig = px.bar(
+        band_counts,
+        x="band",
+        y="count",
+        title="Band Breakdown",
+        text="count",
+        color="band",
+        color_discrete_sequence=px.colors.qualitative.Set2,
+    )
+    fig.update_layout(
+        height=DEFAULT_HEIGHT,
+        xaxis_title="Band",
+        yaxis_title="Number of customers",
+        margin=dict(l=10, r=10, t=60, b=40),
+    )
+    fig.update_traces(textposition="outside")
+    return fig
+
+
+def contributions_chart(contrib_df: pd.DataFrame):
+    fig = px.bar(
+        contrib_df,
+        x="contribution",
+        y="feature",
+        orientation="h",
+        title="Top contributing features (percentage points)",
+    )
+    fig.update_layout(
+        height=DEFAULT_HEIGHT,
+        xaxis_title="Contribution to score (approx % pts)",
+        yaxis_title="Feature",
+        margin=dict(l=10, r=10, t=60, b=40),
+    )
+    return fig
+
+
+# -----------------------------------------------------------------------------
+# UI sections
+# -----------------------------------------------------------------------------
 def _show_overview(scored: pd.DataFrame):
     st.subheader("Overview")
 
@@ -154,10 +249,7 @@ def _show_overview(scored: pd.DataFrame):
     with col1:
         st.metric("Customers scored", f"{scored['customer_id'].nunique():,}")
     with col2:
-        st.metric(
-            "Average health score",
-            f"{scored['score'].mean():.1f}",
-        )
+        st.metric("Average health score", f"{scored['score'].mean():.1f}")
     with col3:
         band_counts = scored["band"].value_counts()
         green = int(band_counts.get("Green", 0))
@@ -165,21 +257,17 @@ def _show_overview(scored: pd.DataFrame):
         red = int(band_counts.get("Red", 0))
         st.metric("Band mix (G / A / R)", f"{green} / {amber} / {red}")
 
-    st.markdown("### Score distribution")
-    st.bar_chart(
-        scored["score"].value_counts(bins=20, sort=False).rename("count"),
-        use_container_width=True,
-    )
+    col_a, col_b = st.columns(2)
 
-    st.markdown("### Band breakdown")
-    band_counts = (
-        scored["band"]
-        .value_counts()
-        .reindex(["Green", "Amber", "Red"])
-        .fillna(0)
-        .astype(int)
-    )
-    st.bar_chart(band_counts, use_container_width=True)
+    with col_a:
+        st.markdown("### Score distribution")
+        fig_dist = score_distribution_chart(scored)
+        st.plotly_chart(fig_dist, use_container_width=True)
+
+    with col_b:
+        st.markdown("### Band breakdown")
+        fig_band = band_breakdown_chart(scored)
+        st.plotly_chart(fig_band, use_container_width=True)
 
 
 def _show_top_bottom(scored: pd.DataFrame):
@@ -231,14 +319,15 @@ def _show_customer_explainability(scored: pd.DataFrame):
     st.subheader("Customer-level explainability")
 
     customer_ids = scored["customer_id"].unique()
+    if len(customer_ids) == 0:
+        st.info("No customers found in the scored dataset.")
+        return
+
     selected_id = st.selectbox(
         "Select a customer",
         options=customer_ids,
-        index=0 if len(customer_ids) > 0 else None,
+        index=0,
     )
-
-    if selected_id is None:
-        return
 
     row = scored.loc[scored["customer_id"] == selected_id].iloc[0]
 
@@ -249,6 +338,10 @@ def _show_customer_explainability(scored: pd.DataFrame):
     )
 
     contrib_cols = [c for c in scored.columns if c.startswith("contrib_")]
+    if not contrib_cols:
+        st.info("No contribution columns found in the dataset.")
+        return
+
     contrib_df = (
         row[contrib_cols]
         .to_frame("contribution")
@@ -266,15 +359,13 @@ def _show_customer_explainability(scored: pd.DataFrame):
         hide_index=True,
     )
 
-    st.bar_chart(
-        contrib_df.set_index("feature")["contribution"],
-        use_container_width=True,
-    )
+    fig_contrib = contributions_chart(contrib_df)
+    st.plotly_chart(fig_contrib, use_container_width=True)
 
 
-# ----------------------
+# -----------------------------------------------------------------------------
 # Main interaction
-# ----------------------
+# -----------------------------------------------------------------------------
 st.markdown("## Run the health score")
 
 if not run_button:
