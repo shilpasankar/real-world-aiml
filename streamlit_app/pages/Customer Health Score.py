@@ -155,12 +155,17 @@ def _compute_scores(
     products: pd.DataFrame,
     ref_date: date,
 ) -> pd.DataFrame:
-    fe_eng = features_engagement(social, comms, customers, ref_date)
-    fe_svc = features_service(complaints, customers, ref_date)
-    fe_val = features_value_momentum(txns, products, customers, ref_date)
-    fe_pol = features_policy(customers, ref_date)
+    # 🔧 Normalize ref_date to pandas Timestamp so comparisons work
+    ref_ts = pd.to_datetime(ref_date)
+
+    fe_eng = features_engagement(social, comms, customers, ref_ts)
+    fe_svc = features_service(complaints, customers, ref_ts)
+    fe_val = features_value_momentum(txns, products, customers, ref_ts)
+    fe_pol = features_policy(customers, ref_ts)
+
     scored = build_scores(fe_eng, fe_svc, fe_val, fe_pol)
     return scored
+
 
 
 # -----------------------------------------------------------------------------
