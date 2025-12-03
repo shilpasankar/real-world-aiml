@@ -1,4 +1,4 @@
-# Customer Health Score — UAE Banking (Rule-based Engine)
+# Customer Health Score — (Rule-based Engine)
 
 Calculate a **customer health score (0–100)** that reflects relationship strength and risk, using:
 - **Engagement** across social media & direct channels
