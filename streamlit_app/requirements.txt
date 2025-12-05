@@ -12,3 +12,7 @@ prophet==1.1.5
 cmdstanpy>=1.2.0
 holidays>=0.29
 plotly>=5.24
+
+
+# For Oil & Gas Price Volatility
+statsmodels>=0.14
