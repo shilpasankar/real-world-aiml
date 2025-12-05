@@ -60,7 +60,6 @@ def align_and_merge(
     if final_freq == "D":
         df = df.resample("D").interpolate()
     elif final_freq == "W":
-        # mean over week but only on numeric cols
         df = df.resample("W").mean(numeric_only=True)
     else:
         final_freq = "M"
@@ -157,11 +156,10 @@ def sarimax_forecast(
                     best_aic = model.aic
                     best_model = model
             except Exception:
-                # just skip bad combos
                 continue
 
     if best_model is None:
-        # --- Fallback: naïve forecast (repeat last observed value) ---
+        # Fallback: naïve forecast (repeat last observed value)
         last_val = float(y.iloc[-1])
         return pd.Series(last_val, index=test.index, name="sarimax_fallback")
 
@@ -176,8 +174,14 @@ def sarimax_forecast(
     )
 
 
-def tree_forecast(train: pd.DataFrame, test: pd.DataFrame) -> pd.Series:
-    """Gradient Boosting on lag + exog features."""
+def tree_forecast_with_importance(
+    train: pd.DataFrame,
+    test: pd.DataFrame
+) -> Tuple[pd.Series, np.ndarray, list]:
+    """
+    Gradient Boosting on lag + exog features.
+    Returns preds, feature_importances_, and feature names.
+    """
     X_train = train.drop(columns=["price"])
     y_train = train["price"]
 
@@ -187,7 +191,10 @@ def tree_forecast(train: pd.DataFrame, test: pd.DataFrame) -> pd.Series:
     model.fit(X_train, y_train)
 
     preds = model.predict(X_test)
-    return pd.Series(preds, index=test.index, name="tree")
+    importances = model.feature_importances_
+    feature_names = list(X_train.columns)
+
+    return pd.Series(preds, index=test.index, name="tree"), importances, feature_names
 
 
 # ---------------------------
@@ -208,7 +215,7 @@ def run_for_chemical(
     - Add features
     - Train/test split with final-horizon holdout
     - Train SARIMAX + tree models
-    - Return metrics, forecast df, and a small matplotlib figure
+    - Return metrics, forecast df, and multiple matplotlib figures for rich visuals.
     """
     merged, exog_cols, final_freq = align_and_merge(prices, exog, chem, freq)
     df = add_features(merged)
@@ -226,22 +233,27 @@ def run_for_chemical(
         exog_cols,
     )
 
-    # Tree uses full feature set
-    tree = tree_forecast(train, test)
+    # Tree uses full feature set + importances
+    tree, importances, feature_names = tree_forecast_with_importance(train, test)
 
     y_true = test["price"]
+
+    sar_mae = float(mean_absolute_error(y_true, sar))
+    sar_mape_val = mape(y_true, sar)
+    tree_mae = float(mean_absolute_error(y_true, tree))
+    tree_mape_val = mape(y_true, tree)
 
     metrics = {
         "chemical": chem,
         "frequency_used": final_freq,
         "horizon": horizon,
         "sarimax": {
-            "mae": float(mean_absolute_error(y_true, sar)),
-            "mape": mape(y_true, sar),
+            "mae": sar_mae,
+            "mape": sar_mape_val,
         },
         "tree": {
-            "mae": float(mean_absolute_error(y_true, tree)),
-            "mape": mape(y_true, tree),
+            "mae": tree_mae,
+            "mape": tree_mape_val,
         },
     }
 
@@ -253,19 +265,62 @@ def run_for_chemical(
         }
     )
 
-    # --- Small, pretty plot ---
-    fig, ax = plt.subplots(figsize=(6, 3))  # not huge
-    ax.plot(df.index, df["price"], label="Actual", linewidth=1)
-    ax.plot(sar.index, sar.values, label="SARIMAX", linewidth=1)
-    ax.plot(tree.index, tree.values, label="Tree", linewidth=1)
-    ax.set_title(f"{chem} – Forecast")
-    ax.set_xlabel("Date")
-    ax.set_ylabel("Price")
-    ax.legend(fontsize=8)
-    fig.tight_layout()
+    # ---------- Figures (small & tidy) ----------
+
+    # 1) Main forecast plot
+    fig_main, ax_main = plt.subplots(figsize=(6, 3))
+    ax_main.plot(df.index, df["price"], label="Actual", linewidth=1)
+    ax_main.plot(sar.index, sar.values, label="SARIMAX", linewidth=1)
+    ax_main.plot(tree.index, tree.values, label="Tree", linewidth=1)
+    ax_main.set_title(f"{chem} – Forecast")
+    ax_main.set_xlabel("Date")
+    ax_main.set_ylabel("Price")
+    ax_main.legend(fontsize=8)
+    fig_main.tight_layout()
+
+    # 2) Residuals over time
+    sar_resid = y_true - sar
+    tree_resid = y_true - tree
+
+    fig_resid, ax_resid = plt.subplots(figsize=(6, 3))
+    ax_resid.axhline(0, color="gray", linewidth=0.8)
+    ax_resid.plot(sar_resid.index, sar_resid.values, label="SARIMAX residuals", linewidth=1)
+    ax_resid.plot(tree_resid.index, tree_resid.values, label="Tree residuals", linewidth=1)
+    ax_resid.set_title(f"{chem} – Residuals Over Time")
+    ax_resid.set_xlabel("Date")
+    ax_resid.set_ylabel("Error")
+    ax_resid.legend(fontsize=8)
+    fig_resid.tight_layout()
+
+    # 3) Residual histogram for best model
+    best_model_name = "sarimax" if sar_mape_val <= tree_mape_val else "tree"
+    best_resid = sar_resid if best_model_name == "sarimax" else tree_resid
+
+    fig_hist, ax_hist = plt.subplots(figsize=(4, 3))
+    ax_hist.hist(best_resid.values, bins=8, alpha=0.8)
+    ax_hist.set_title(f"{chem} – {best_model_name.upper()} Residuals Dist.")
+    ax_hist.set_xlabel("Error")
+    ax_hist.set_ylabel("Count")
+    fig_hist.tight_layout()
+
+    # 4) Feature importance bar chart (top 10)
+    order = np.argsort(importances)[::-1]
+    top_k = min(10, len(order))
+    top_idx = order[:top_k]
+    top_features = [feature_names[i] for i in top_idx]
+    top_importances = importances[top_idx]
+
+    fig_imp, ax_imp = plt.subplots(figsize=(5, 3))
+    ax_imp.barh(top_features[::-1], top_importances[::-1])
+    ax_imp.set_title(f"{chem} – Tree Feature Importance (Top {top_k})")
+    ax_imp.set_xlabel("Importance")
+    fig_imp.tight_layout()
 
     return {
         "metrics": metrics,
         "forecast_df": forecast_df,
-        "fig": fig,
+        "fig_main": fig_main,
+        "fig_resid": fig_resid,
+        "fig_hist": fig_hist,
+        "fig_importance": fig_imp,
     }
