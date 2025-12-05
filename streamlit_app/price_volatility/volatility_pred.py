@@ -45,7 +45,7 @@ def align_and_merge(prices, exog, chem, freq):
     elif final_freq == "W":
         df = df.resample("W").mean()
     else:
-        df = df.resample("M").mean()
+        df = df.resample("M").mean(numeric_only=True)
 
     ex = exog.set_index("date")
     ex = ex.resample(final_freq).ffill()
