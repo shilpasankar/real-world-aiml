@@ -1,8 +1,8 @@
-# Price Volatility Analysis (KSA Oil & Gas)  
+# Price Volatility Analysis (Oil & Gas)  
 **Forecast prices of key chemicals/substances using macroeconomic & regional drivers (time series with exogenous variables).**
 
 ## 🎯 Problem
-KSA oil & gas operators need short– to mid-term visibility into prices of important chemicals (e.g., methanol, ammonia, MEG) to optimize procurement and hedging. Prices are volatile and influenced by macroeconomic indicators (CPI, PPI, FX, freight), energy benchmarks (Brent), and regional signals (GCC PMI, KSA electricity demand, seasonalities/holidays).
+Regional oil & gas operators need short– to mid-term visibility into prices of important chemicals (e.g., methanol, ammonia, MEG) to optimize procurement and hedging. Prices are volatile and influenced by macroeconomic indicators (CPI, PPI, FX, freight), energy benchmarks (Brent), and regional signals (GCC PMI, KSA electricity demand, seasonalities/holidays).
 
 ## ✨ Goals
 - Build **daily/weekly/monthly** forecasts (configurable) for multiple chemicals.
