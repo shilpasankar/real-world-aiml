@@ -219,4 +219,141 @@ def expanding_split(df: pd.DataFrame, horizon: int) -> Tuple[pd.DataFrame, pd.Da
     if len(df) <= horizon:
         raise ValueError("Not enough observations to create a holdout set with given horizon.")
     train = df.iloc[:-horizon].copy()
-    test
+    test = df.iloc[-horizon:].copy()
+    if len(train) < 24:
+        raise ValueError("Not enough history. Provide at least 24 periods before the forecast horizon.")
+    return train, test
+
+
+def build_forecast_plot(
+    chem: str,
+    df: pd.DataFrame,
+    sarimax_pred: pd.Series,
+    tree_pred: pd.Series
+):
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(df.index, df["price"], label="actual")
+    ax.plot(sarimax_pred.index, sarimax_pred.values, label="sarimax forecast")
+    ax.plot(tree_pred.index, tree_pred.values, label="tree baseline")
+    ax.set_title(f"{chem} — Actuals vs Forecast")
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Price")
+    ax.legend()
+    fig.tight_layout()
+    return fig
+
+
+def run_for_chemical(
+    chem: str,
+    prices: pd.DataFrame,
+    exog: pd.DataFrame,
+    freq: Optional[str],
+    horizon: int,
+    output_dir: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Core pipeline for a single chemical.
+    Can be used from CLI (with output_dir) or Streamlit (output_dir=None).
+
+    Returns a dict with:
+        - metrics (dict)
+        - forecast_df (DataFrame)
+        - fig (matplotlib Figure)
+    """
+    merged, exog_cols, final_freq = align_and_merge(prices, exog, chem, freq)
+
+    with_features = add_time_features(merged, final_freq)
+    # Drop rows with NA from lagging
+    with_features = with_features.dropna()
+
+    # Train/test split
+    train, test = expanding_split(with_features, horizon)
+
+    # SARIMAX uses only price + exog (not lag features)
+    sarimax_train = train[["price"] + exog_cols]
+    sarimax_test = test[["price"] + exog_cols]
+
+    sarimax_pred = fit_sarimax(sarimax_train, sarimax_test, exog_cols)
+
+    # Tree baseline uses all features
+    tree_pred = fit_tree_baseline(train, test)
+
+    # Evaluate
+    y_true = test["price"]
+    sarimax_mae, sarimax_mape = evaluate(y_true, sarimax_pred)
+    tree_mae, tree_mape = evaluate(y_true, tree_pred)
+
+    metrics = {
+        "chemical": chem,
+        "horizon": horizon,
+        "frequency": final_freq,
+        "sarimax": {"mae": sarimax_mae, "mape": sarimax_mape},
+        "tree_baseline": {"mae": tree_mae, "mape": tree_mape},
+    }
+
+    forecast_df = pd.DataFrame({
+        "date": y_true.index,
+        "actual": y_true.values,
+        "sarimax_forecast": sarimax_pred.values,
+        "tree_baseline_forecast": tree_pred.values
+    }).set_index("date")
+
+    fig = build_forecast_plot(chem, with_features, sarimax_pred, tree_pred)
+
+    # Optional: write artifacts to disk (for CLI usage)
+    if output_dir is not None:
+        os.makedirs(output_dir, exist_ok=True)
+        with open(os.path.join(output_dir, f"metrics_{chem}.json"), "w") as f:
+            json.dump(metrics, f, indent=2)
+
+        forecast_df.to_csv(os.path.join(output_dir, f"forecast_{chem}.csv"))
+
+        plot_path = os.path.join(output_dir, f"plot_{chem}.png")
+        fig.savefig(plot_path)
+
+    print(f"[{chem}] SARIMAX MAPE={sarimax_mape:.2f}% | Tree MAPE={tree_mape:.2f}%")
+
+    return {
+        "metrics": metrics,
+        "forecast_df": forecast_df,
+        "fig": fig,
+    }
+
+
+# ---------------------------
+# CLI entrypoint
+# ---------------------------
+
+def main():
+    parser = argparse.ArgumentParser(description="KSA Chemicals Price Volatility Forecasting")
+    parser.add_argument("--prices", required=True, help="Path to chemical_prices.csv")
+    parser.add_argument("--exog", required=True, help="Path to macro_factors.csv")
+    parser.add_argument("--chemicals", nargs="*", default=None, help="Chemicals to model; default=all")
+    parser.add_argument("--horizon", type=int, default=12, help="Forecast horizon (periods)")
+    parser.add_argument("--freq", type=str, default=None, help="Data frequency alias: D/W/M")
+    parser.add_argument("--output_dir", type=str, default="outputs", help="Output directory")
+    args = parser.parse_args()
+
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    prices = read_prices(args.prices)
+    exog = read_exog(args.exog)
+
+    chems = args.chemicals or sorted(prices["chemical"].unique())
+
+    for chem in chems:
+        try:
+            _ = run_for_chemical(
+                chem=chem,
+                prices=prices,
+                exog=exog,
+                freq=args.freq,
+                horizon=args.horizon,
+                output_dir=args.output_dir
+            )
+        except Exception as e:
+            print(f"[{chem}] Skipped due to error: {e}")
+
+
+if __name__ == "__main__":
+    main()
