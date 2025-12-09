@@ -20,6 +20,7 @@ st.write("Upload documents and let the AI Detective uncover contradictions, miss
 
 # ------------------- SIDEBAR CONTROLS -------------------
 st.sidebar.header("🔧 Settings")
+st.sidebar.image("assets/truthlens_logo.svg", width=180)
 
 uploaded_files = st.sidebar.file_uploader(
     "Upload multiple documents (PDF or TXT)",
