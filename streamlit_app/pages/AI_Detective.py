@@ -1,145 +1,131 @@
 import streamlit as st
-import pdfplumber
+from sentence_transformers import SentenceTransformer
+from transformers import pipeline
+import faiss
+from pypdf import PdfReader
+import numpy as np
 
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
-from langchain.llms import OpenAI
-from langchain.chains import RetrievalQA
+st.title("🕵️ AI Detective – PDF Investigator (100% Free, No OpenAI)")
 
+# -----------------------
+# Load Local Embedding Model
+# -----------------------
+@st.cache_resource
+def load_embedder():
+    return SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 
-# ----------------------------------------------------------
-# PAGE CONFIG
-# ----------------------------------------------------------
-st.set_page_config(
-    page_title="TruthLens AI — AI Detective",
-    page_icon="assets/truthlens_logo.svg",
-    layout="wide"
-)
+embedder = load_embedder()
 
-st.title("🕵️‍♂️ TruthLens AI — Document Contradiction & Claim Detector")
-st.write("Upload documents and let the AI Detective uncover contradictions, missing information, and suspicious claims.")
+# -----------------------
+# Load Local LLM
+# -----------------------
+@st.cache_resource
+def load_llm():
+    # You can swap this for any local HF model you have
+    return pipeline(
+        "text-generation",
+        model="tiiuae/falcon-7b-instruct",
+        device_map="auto"
+    )
 
+llm = load_llm()
 
-# ----------------------------------------------------------
-# SIDEBAR SETTINGS
-# ----------------------------------------------------------
-st.sidebar.header("🔧 Settings")
+# -----------------------
+# PDF → Text
+# -----------------------
+def pdf_to_text(uploaded_pdf):
+    reader = PdfReader(uploaded_pdf)
+    texts = []
+    for page in reader.pages:
+        page_text = page.extract_text() or ""
+        texts.append(page_text)
+    return "\n".join(texts)
 
-uploaded_files = st.sidebar.file_uploader(
-    "Upload multiple documents (PDF or TXT)",
-    accept_multiple_files=True
-)
+# -----------------------
+# Chunking helper
+# -----------------------
+def chunk_text(text, chunk_size=800, overlap=200):
+    words = text.split()
+    chunks = []
+    start = 0
+    while start < len(words):
+        end = start + chunk_size
+        chunk = " ".join(words[start:end])
+        chunks.append(chunk)
+        start += chunk_size - overlap
+    return chunks
 
-analysis_modes = st.sidebar.multiselect(
-    "Detective Modes",
-    ["Contradictions", "Missing Information", "Suspicious Claims"],
-    default=["Contradictions", "Missing Information"]
-)
+# -----------------------
+# Build FAISS index
+# -----------------------
+def build_faiss_index(chunks):
+    embeddings = embedder.encode(chunks)
+    embeddings = np.array(embeddings).astype("float32")
+    dim = embeddings.shape[1]
+    index = faiss.IndexFlatL2(dim)
+    index.add(embeddings)
+    return index, chunks
 
-temperature = st.sidebar.slider("Model Creativity", 0.0, 1.0, 0.0)
+# Keep state across interactions
+if "faiss_index" not in st.session_state:
+    st.session_state.faiss_index = None
+if "chunks" not in st.session_state:
+    st.session_state.chunks = None
 
-run_button = st.sidebar.button("Run Analysis")
+# -----------------------
+# UI: PDF Upload
+# -----------------------
+uploaded_pdf = st.file_uploader("Upload a PDF to investigate", type=["pdf"])
 
-st.sidebar.markdown("---")
-st.sidebar.caption("TruthLens AI © 2025")
-
-
-# ----------------------------------------------------------
-# TEXT EXTRACTION (PDF + TXT)
-# ----------------------------------------------------------
-def extract_text(files):
-    """Extracts text from PDF or TXT files using pdfplumber."""
-    text = ""
-
-    for file in files:
-        if file.type == "application/pdf":
-            try:
-                with pdfplumber.open(file) as pdf:
-                    for page in pdf.pages:
-                        extracted = page.extract_text()
-                        if extracted:
-                            text += extracted + "\n"
-            except Exception as e:
-                st.error(f"❌ Error reading PDF: {e}")
-
+if uploaded_pdf is not None:
+    with st.spinner("Reading and indexing PDF..."):
+        text = pdf_to_text(uploaded_pdf)
+        if not text.strip():
+            st.error("Could not extract text from this PDF.")
         else:
-            try:
-                text += file.read().decode("utf-8") + "\n"
-            except:
-                st.error("❌ Unable to decode text file.")
+            chunks = chunk_text(text)
+            index, chunks = build_faiss_index(chunks)
+            st.session_state.faiss_index = index
+            st.session_state.chunks = chunks
+            st.success(f"Indexed {len(chunks)} chunks from the PDF ✅")
 
-    return text
+st.write("---")
 
+# -----------------------
+# Question Input
+# -----------------------
+query = st.text_input("Ask the AI Detective a question about this PDF:")
 
-# ----------------------------------------------------------
-# ANALYSIS PIPELINE
-# ----------------------------------------------------------
-def run_analysis(full_text, modes):
-    """Runs chunking → embeddings → retrieval → LLM reasoning."""
-    
-    # 1. Chunk text
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=600,
-        chunk_overlap=80
-    )
-    chunks = splitter.split_text(full_text)
+def search_chunks(query, k=5):
+    q_emb = embedder.encode([query]).astype("float32")
+    D, I = st.session_state.faiss_index.search(q_emb, k)
+    indices = I[0]
+    return [st.session_state.chunks[i] for i in indices if i < len(st.session_state.chunks)]
 
-    # 2. Embed chunks
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
-    )
-    db = FAISS.from_texts(chunks, embeddings)
-    retriever = db.as_retriever(search_kwargs={"k": 5})
+if query:
+    if st.session_state.faiss_index is None:
+        st.warning("Please upload a PDF first so I have something to investigate. 🕵️‍♂️")
+    else:
+        st.write("### 🔍 Relevant Excerpts:")
+        retrieved = search_chunks(query, k=4)
+        for i, chunk in enumerate(retrieved):
+            with st.expander(f"Clue {i+1}"):
+                st.write(chunk)
 
-    # 3. LLM (OpenAI)
-    llm = OpenAI(temperature=temperature)
+        st.write("---")
+        context = "\n\n".join(retrieved)
+        prompt = (
+            "You are an assistant answering questions based ONLY on the context.\n"
+            "Be concise and cite phrases from the context when relevant.\n\n"
+            f"Context:\n{context}\n\n"
+            f"Question: {query}\n\n"
+            "Answer:"
+        )
 
-    # 4. Prompt
-    prompt = f"""
-    You are TruthLens AI — a forensic reasoning engine.
-
-    Analyze the retrieved excerpts for:
-    {', '.join(modes)}
-
-    For each issue:
-    - Provide a short title
-    - Explain the contradiction or missing information clearly
-    - Include the exact evidence text
-    - Rate severity: Low, Medium, High
-
-    Respond in clean, structured markdown.
-    """
-
-    qa = RetrievalQA.from_chain_type(
-        llm=llm,
-        chain_type="stuff",
-        retriever=retriever
-    )
-
-    return qa.run(prompt)
-
-
-# ----------------------------------------------------------
-# MAIN APP LOGIC
-# ----------------------------------------------------------
-if run_button and uploaded_files:
-    with st.spinner("🕵️ Detective analyzing your documents…"):
-        full_text = extract_text(uploaded_files)
-        findings = run_analysis(full_text, analysis_modes)
-
-    st.success("✅ Analysis complete! Findings below.")
-
-    # Tabs
-    tab1, tab2 = st.tabs(["🔍 Findings", "📄 Document Text"])
-
-    with tab1:
-        st.markdown("## 🔍 Findings")
-        st.write(findings)
-
-    with tab2:
-        st.markdown("## 📄 Full Extracted Document Text")
-        st.text(full_text)
-
-else:
-    st.info("Upload documents and click **Run Analysis** to begin.")
+        st.write("### 🧠 Detective's Deduction:")
+        with st.spinner("Thinking..."):
+            out = llm(prompt, max_new_tokens=256, do_sample=True, temperature=0.3)[0]["generated_text"]
+        # Optionally trim everything before "Answer:" if model echoes prompt
+        if "Answer:" in out:
+            out = out.split("Answer:", 1)[-1].strip()
+        st.write(out)
