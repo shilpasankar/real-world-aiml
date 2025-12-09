@@ -5,7 +5,7 @@ import faiss
 from pypdf import PdfReader
 import numpy as np
 
-st.title("🕵️ AI Detective – PDF Investigator (100% Free, No OpenAI)")
+st.title("🕵️ AI Detective – PDF Investigator")
 
 # -----------------------
 # Load Local Embedding Model
