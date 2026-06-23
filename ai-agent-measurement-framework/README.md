@@ -1,15 +1,15 @@
 # AI Agent Measurement Framework
 This project simulates an AI agent rollout, estimates incremental impact using a difference-in-differences framework, and measures hallucination rate as a quality-risk metric.
 
-## Why this Project Exists
+This repository was inspired by the development of a Slack-native internal knowledge agent designed to answer recurring measurement and analytics questions using curated documentation and operational guidance.
 
-This framework was developed to evaluate a Slack-native internal knowledge agent that supports recurring measurement and sales-facing questions.
+While the agent was successfully deployed as a support solution, a formal measurement system was not implemented at the time of development.
 
-The same evaluation logic can be extended to other internal knowledge workflows.
+This project therefore explores a hypothetical question:
 
-#### Real-World Application: Internal Knowledge Agent
+"If I were tasked with designing a measurement framework for evaluating an enterprise AI agent, how would I measure adoption, effectiveness, productivity impact, incrementality, and risk?"
 
-To demonstrate the practical application of this framework, I designed a Slack-native internal knowledge agent intended to support recurring measurement and analytics-related questions using curated documentation, operational playbooks, historical guidance, and validated responses. While the primary objective of the agent was to improve self-service support and reduce repetitive expert intervention, the more interesting challenge was determining how to measure success beyond simple usage metrics. This led to the development of the AI Agent Measurement Framework presented in this repository, which evaluates agent performance across five dimensions: adoption, effectiveness, productivity impact, incrementality, and operational risk. The framework provides a structured approach for assessing whether AI systems create meaningful organizational value while maintaining quality, trust, and governance standards.
+The datasets, experiments, and models included in this repository are illustrative examples intended to demonstrate measurement methodology rather than report actual production performance.
 
 
 ## Overview
