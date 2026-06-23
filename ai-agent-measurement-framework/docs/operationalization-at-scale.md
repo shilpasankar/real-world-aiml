@@ -102,6 +102,16 @@ Requirements:
 * Agent benchmarking
 * Agent portfolio optimization
 
+**Machine Learning Model:**
+This project currently uses logistic regression for binary outcomes.
+
+A production implementation would likely use hierarchical Bayesian models to account for:
+
+- Team-level variation
+- User-level variation
+- Sparse data segments
+- Uncertainty quantification
+
 
 ## Key Principle
 
