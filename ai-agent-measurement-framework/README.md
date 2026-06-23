@@ -1,4 +1,5 @@
 # AI Agent Measurement Framework
+This project simulates an AI agent rollout, estimates incremental impact using a difference-in-differences framework, and measures hallucination rate as a quality-risk metric.
 
 ## Overview
 
