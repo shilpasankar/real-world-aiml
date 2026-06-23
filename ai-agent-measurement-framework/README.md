@@ -1,6 +1,12 @@
 # AI Agent Measurement Framework
 This project simulates an AI agent rollout, estimates incremental impact using a difference-in-differences framework, and measures hallucination rate as a quality-risk metric.
 
+## Related Use Case
+
+This framework was developed to evaluate a Slack-native internal knowledge agent that supports recurring measurement and sales-facing questions.
+
+The same evaluation logic can be extended to other internal knowledge workflows.
+
 ## Overview
 
 Organizations are rapidly deploying AI agents, yet most struggle to answer a fundamental question:
